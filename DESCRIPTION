@@ -1,11 +1,54 @@
 Package: ChickenViromeCTCvsMCE
-Title: What the Package Does (One Line, Title Case)
-Version: 0.0.0.9000
+Title: Spatiotemporal Dynamics of Chicken Gut Virome Under Antibiotic and Phytogenic Treatments
+Version: 0.1
 Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+    person("Jinlong", "Ru", , "jinlong.ru@gmail.com", role = c("aut", "cre"))
+Description: This package contains metagenomic analysis workflows for investigating 
+    the chicken gut virome, focusing on bacteriophage communities (phageome) across 
+    intestinal regions and developmental stages. It analyzes spatiotemporal dynamics 
+    and compares the impacts of chlortetracycline (CTC) antibiotic versus Macleaya 
+    cordata extract (MCE) phytogenic supplementation on viral populations. The analysis 
+    uses data from 360 chickens across multiple age points and dietary treatments.
+License: GPL (>= 3)
 Encoding: UTF-8
 URL: https://github.com/rujinlong/ChickenViromeCTCvsMCE
 BugReports: https://github.com/rujinlong/ChickenViromeCTCvsMCE/issues
+Imports: 
+    ANCOMBC,
+    ape,
+    base,
+    conflicted,
+    connections,
+    data.table,
+    DBI,
+    devtools,
+    dplyr,
+    DT,
+    gapminder,
+    ggplot2,
+    ggpubr,
+    ggsankey,
+    grDevices,
+    here,
+    lme4,
+    mia,
+    microbiome,
+    openxlsx,
+    patchwork,
+    pheatmap,
+    phyloseq,
+    projthis,
+    readr,
+    rmarkdown,
+    RSQLite,
+    shiny,
+    SingleCellExperiment,
+    stats,
+    stringr,
+    tibble,
+    tidyr,
+    tidyverse,
+    vegan
+Remotes: 
+    davidsjoberg/ggsankey,
+    rujinlong/projthis@7e2839f

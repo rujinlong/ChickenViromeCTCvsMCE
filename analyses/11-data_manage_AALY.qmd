@@ -1,0 +1,635 @@
+---
+title: "11-data_manage_AALY"
+title-block-banner: true
+author:
+  - name: Li Yang
+date: 2025-09-01
+toc: true
+toc-depth: 4
+number-sections: true
+code-fold: true
+code-line-numbers: true
+code-tools: true
+format: 
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    page-layout: full
+reference-location: section
+citation-location: document
+params:
+  name: "11-data_manage_AALY"
+---
+
+**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+
+This document performs data management and exploratory analysis on the combined Arbor Acres (AA) and Local Yellow-feather (LY) chicken dataset, including viral contig characterization, quality assessment, taxonomic classification, host prediction, and auxiliary metabolic gene (AMG) analysis.
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+#| warning: false
+
+wd <- "analyses"
+if (basename(getwd()) != wd) {
+  setwd(here::here(wd))
+}
+
+# params <- list(name = "11-data_manage_AALY")
+here::i_am(paste0(params$name, ".qmd"), uuid = "afdd39a0-2697-4df3-8c3e-f4ad5098e86f")
+
+projthis::proj_create_dir_target(params$name, clean = FALSE)
+path_target <- projthis::proj_path_target(params$name)
+path_source <- projthis::proj_path_source(params$name)
+path_raw <- path_source("00-raw")
+path_resource <- here::here(path_raw, "d00-resource")
+path_data <- here::here(path_raw, paste0("d", params$name))
+
+dir.create(path_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: packages
+#| message: false
+
+suppressPackageStartupMessages({
+  library(here)
+  library(conflicted)
+  library(tidyverse)
+  library(data.table)
+  library(DBI)
+  library(RSQLite)
+  library(ggsankey)
+  library(patchwork)
+  devtools::load_all()
+})
+
+conflicted::conflicts_prefer(dplyr::filter)
+conflicted::conflicts_prefer(dplyr::select)
+conflicted::conflicts_prefer(dplyr::mutate)
+conflicted::conflicts_prefer(dplyr::summarise)
+conflicted::conflicts_prefer(dplyr::rename)
+
+con <- load_db()
+```
+
+## Load Data
+
+```{r}
+#| label: load-data
+
+chicken_contig_annotation <- DBI::dbReadTable(con, "chicken_contig_annotation")
+chicken_host <- DBI::dbReadTable(con, "chicken_host")
+chicken_amg <- DBI::dbReadTable(con, "chicken_amg")
+metadata417359 <- read.csv(here::here(path_raw, "417359SraRunTable.csv"))
+```
+
+# Sample Selection
+
+Filter samples from Arbor Acres (Beijing) and Local Yellow-feather chickens (Hunan), excluding 78-day-old samples.
+
+```{r}
+#| label: sample-selection
+
+mapping_AALY <- metadata417359 %>%
+  dplyr::filter(geo_loc_name %in% c("China:Beijing", "China:Hunan")) %>%
+  dplyr::filter(Host_Age != "78-day")
+```
+
+# Viral Contig Characterization
+
+## Total Viral Contigs
+
+Extract viral contigs from selected samples (n = 12,400).
+
+```{r}
+#| label: viral-contigs
+
+ctg_AALY <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mapping_AALY$Run)
+
+cat("Total viral contigs:", length(ctg_AALY$contig_id), "\n")
+```
+
+## Contig Length Distribution
+
+Analyze the distribution of contig lengths across all viral genomes.
+
+```{r}
+#| label: contig-length-data
+
+lenth_AALY <- chicken_contig_annotation %>%
+  dplyr::select(contig_id, contig_length) %>%
+  dplyr::filter(contig_id %in% ctg_AALY$contig_id)
+
+levels_order <- c(
+  "5000-9999", "10000-14999", "15000-19999", "20000-24999", "25000-29999",
+  "30000-34999", "35000-39999", "40000-44999", "45000-49999", ">=50000"
+)
+
+lenth_AALY <- lenth_AALY %>%
+  dplyr::mutate(
+    length_group = dplyr::case_when(
+      contig_length >= 5000 & contig_length < 10000 ~ "5000-9999",
+      contig_length >= 10000 & contig_length < 15000 ~ "10000-14999",
+      contig_length >= 15000 & contig_length < 20000 ~ "15000-19999",
+      contig_length >= 20000 & contig_length < 25000 ~ "20000-24999",
+      contig_length >= 25000 & contig_length < 30000 ~ "25000-29999",
+      contig_length >= 30000 & contig_length < 35000 ~ "30000-34999",
+      contig_length >= 35000 & contig_length < 40000 ~ "35000-39999",
+      contig_length >= 40000 & contig_length < 45000 ~ "40000-44999",
+      contig_length >= 45000 & contig_length < 50000 ~ "45000-49999",
+      TRUE ~ ">=50000"
+    ),
+    length_group = factor(length_group, levels = levels_order)
+  )
+
+length_summary <- lenth_AALY %>%
+  dplyr::group_by(length_group) %>%
+  dplyr::summarise(number_of_phage_genomes = n())
+```
+
+### Visualization
+
+```{r}
+#| label: fig-contig-length
+#| fig-cap: "Distribution of viral contig lengths"
+
+plot_lenth <- ggplot2::ggplot(length_summary, ggplot2::aes(x = length_group, y = number_of_phage_genomes)) +
+  ggplot2::geom_bar(stat = "identity", fill = "#FFCEA3") +
+  ggplot2::labs(
+    title = "Distribution of Contig Lengths",
+    x = "Length Range (bp)",
+    y = "Number of Phage Genomes"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    axis.ticks = ggplot2::element_line(color = "black", linewidth = 1),
+    axis.line = ggplot2::element_line(color = "black", linewidth = 1),
+    panel.grid.major = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(color = "black", face = "bold", angle = 45, hjust = 1),
+    axis.text.y = ggplot2::element_text(color = "black", face = "bold"),
+    axis.title = ggplot2::element_text(color = "black", face = "bold"),
+    aspect.ratio = 3/4
+  )
+
+print(plot_lenth)
+
+ggplot2::ggsave(path_target("plot_lenth.pdf"), plot = plot_lenth, width = 8, height = 6)
+ggplot2::ggsave(path_target("plot_lenth.png"), plot = plot_lenth, width = 8, height = 6)
+```
+
+# Viral Operational Taxonomic Units (vOTUs)
+
+## vOTU Clustering
+
+Contigs clustered into 2,118 vOTUs, with 571 medium-to-high quality vOTUs (completeness > 50%).
+
+```{r}
+#| label: votu-clustering
+
+count_vOTU <- ctg_AALY %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::distinct(vOTU_id)
+
+Com_vOTU <- ctg_AALY %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_completeness > 50) %>%
+  dplyr::distinct(vOTU_id)
+
+cat("Total vOTUs:", nrow(count_vOTU), "\n")
+cat("Medium-to-high quality vOTUs:", nrow(Com_vOTU), "\n")
+```
+
+## Quality Assessment
+
+```{r}
+#| label: quality-assessment
+
+vOTU_score <- ctg_AALY %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::select(checkv_quality_score, contig_repid) %>%
+  unique() %>%
+  dplyr::group_by(checkv_quality_score) %>%
+  dplyr::summarise(count = n()) %>%
+  dplyr::mutate(percentage = count / sum(count) * 100)
+
+vOTU_score
+```
+
+## Quality vs. Length Distribution
+
+```{r}
+#| label: quality-length-data
+
+density_AALY <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mapping_AALY$Run) %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::select(vOTU_id, checkv_quality_score, contig_length) %>%
+  dplyr::mutate(
+    Quality = factor(
+      checkv_quality_score,
+      levels = c(1, 2, 3, 4),
+      labels = c("Complete", "High-quality", "Medium-quality", "Low-quality")
+    )
+  ) %>%
+  dplyr::rename(Length = contig_length)
+
+quality_counts <- density_AALY %>%
+  dplyr::group_by(Quality) %>%
+  dplyr::summarise(count = n())
+
+quality_labels <- paste0(quality_counts$Quality, " (", quality_counts$count, ")")
+```
+
+### Visualization
+
+```{r}
+#| label: fig-quality-density
+#| fig-cap: "Density distribution of vOTU quality by contig length"
+
+plot_density_AALY <- ggplot2::ggplot(density_AALY, ggplot2::aes(x = log10(Length), fill = Quality, color = Quality)) +
+  ggplot2::geom_density(alpha = 0.5) +
+  ggplot2::geom_vline(ggplot2::aes(xintercept = mean(log10(Length[Quality == "Complete"])), color = "Complete"), linetype = "dashed") +
+  ggplot2::geom_vline(ggplot2::aes(xintercept = mean(log10(Length[Quality == "High-quality"])), color = "High-quality"), linetype = "dashed") +
+  ggplot2::geom_vline(ggplot2::aes(xintercept = mean(log10(Length[Quality == "Medium-quality"])), color = "Medium-quality"), linetype = "dashed") +
+  ggplot2::geom_vline(ggplot2::aes(xintercept = mean(log10(Length[Quality == "Low-quality"])), color = "Low-quality"), linetype = "dashed") +
+  ggplot2::labs(x = "Log10(Length)", y = "Density", fill = "vOTU Quality", color = "vOTU Quality") +
+  ggplot2::scale_color_manual(
+    values = c("Complete" = "blue", "High-quality" = "green", "Medium-quality" = "orange", "Low-quality" = "red"),
+    labels = quality_labels
+  ) +
+  ggplot2::scale_fill_manual(
+    values = c("Complete" = "blue", "High-quality" = "green", "Medium-quality" = "orange", "Low-quality" = "red"),
+    labels = quality_labels
+  ) +
+  ggplot2::theme_minimal(base_size = 15) +
+  ggplot2::theme(
+    panel.grid = ggplot2::element_blank(),
+    panel.background = ggplot2::element_rect(fill = "white"),
+    axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 10)),
+    axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 10)),
+    axis.text = ggplot2::element_text(color = "black"),
+    axis.title = ggplot2::element_text(color = "black", face = "bold")
+  )
+
+print(plot_density_AALY)
+
+ggplot2::ggsave(path_target("plot_density_AALY.pdf"), plot = plot_density_AALY, width = 10, height = 6)
+ggplot2::ggsave(path_target("plot_density_AALY.png"), plot = plot_density_AALY, width = 10, height = 6)
+```
+
+# Lifestyle Classification
+
+Analysis of viral lifestyles (temperate vs. virulent) for medium-to-high quality vOTUs.
+
+```{r}
+#| label: lifestyle-data
+
+life_AALY <- ctg_AALY %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::select(contig_id, lifestyle, checkv_quality_score, vc_classified) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  unique()
+
+life_data <- life_AALY %>%
+  dplyr::group_by(vc_classified, lifestyle) %>%
+  dplyr::summarise(contig_count = n(), .groups = "drop")
+
+life_data
+```
+
+## Visualization
+
+```{r}
+#| label: fig-lifestyle
+#| fig-cap: "Distribution of viral lifestyles by classification status"
+
+plot_life <- ggplot2::ggplot(life_data, ggplot2::aes(x = vc_classified, y = contig_count, fill = lifestyle)) +
+  ggplot2::geom_bar(stat = "identity", position = ggplot2::position_dodge()) +
+  ggplot2::labs(x = "Classification Status", y = "Number of Phage Genomes", fill = "Lifestyle") +
+  ggplot2::scale_fill_manual(values = c("#00BF7D", "#F8766D")) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    axis.ticks = ggplot2::element_line(color = "black", linewidth = 1),
+    axis.line = ggplot2::element_line(color = "black", linewidth = 1),
+    panel.grid.major = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    legend.position = "right",
+    legend.title = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(color = "black", face = "bold", angle = 45, hjust = 1),
+    axis.text.y = ggplot2::element_text(color = "black", face = "bold"),
+    axis.title = ggplot2::element_text(color = "black", face = "bold"),
+    aspect.ratio = 5/2
+  )
+
+print(plot_life)
+
+ggplot2::ggsave(path_target("plot_life.pdf"), plot = plot_life, width = 8, height = 6)
+ggplot2::ggsave(path_target("plot_life.png"), plot = plot_life, width = 8, height = 6)
+```
+
+# Taxonomic Classification
+
+## Sankey Diagram
+
+Hierarchical taxonomic classification of medium-to-high quality vOTUs.
+
+```{r}
+#| label: taxonomy-data
+
+taxon <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mapping_AALY$Run) %>%
+  dplyr::select(vOTU_id, checkv_quality_score, checkv_completeness, genomad_taxonomy) %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::slice_max(order_by = checkv_completeness, with_ties = FALSE) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::select(genomad_taxonomy, vOTU_id) %>%
+  unique() %>%
+  tidyr::separate(genomad_taxonomy, into = c("virus", "Realm", "Kingdom", "Phylum", "Class", "Order", "Family"), sep = ";") %>%
+  dplyr::select(Realm, Kingdom, Phylum, Class, Order, Family) %>%
+  dplyr::group_by(Realm, Kingdom, Phylum, Class, Order, Family) %>%
+  dplyr::summarise(Count = n(), .groups = "drop") %>%
+  dplyr::mutate(
+    Family = ifelse(Family == "", "Unknown", Family),
+    Order = ifelse(Order == "", "Unknown", Order),
+    Abundance = log(Count)
+  )
+
+taxon2 <- taxon %>%
+  ggsankey::make_long(Realm, Kingdom, Phylum, Class, Order, Family)
+```
+
+### Visualization
+
+```{r}
+#| label: fig-taxonomy-sankey
+#| fig-cap: "Taxonomic classification of viral contigs"
+
+colors <- c(
+  "#3B9AB2", "#78B7C5", "#EBCC2A", "#E1AF00", "#F21A00", "#ECCBAE", "#046C9A", "#D69C4E",
+  "#ABDDDE", "#711585", "#E62EC6", "#E6542E", "#DFE62E", "#2EE6AD", "#E67A2E", "#47E62E",
+  "#2EE6D3", "#2EE63B", "#E6C62E", "#2E3BE6", "#E62E7A", "#B92EE6", "#6DE62E", "#E62EA0",
+  "#93E62E", "#B9E62E", "#E62E2E", "#DF2EE6", "#2EADE6", "#E6A02E", "#E62E2E", "#932EE6",
+  "#472EE6", "#E62E54", "#2E61E6", "#4C4D4F"
+)
+
+plot_sankey2 <- ggplot2::ggplot(taxon2, ggplot2::aes(x = x, next_x = next_x, node = node, next_node = next_node, fill = factor(node), label = node)) +
+  ggsankey::geom_sankey(flow.alpha = 0.6, node.color = "gray30") +
+  ggsankey::geom_sankey_label(size = 3, color = "white", fill = "gray40") +
+  ggplot2::scale_fill_manual(values = colors) +
+  ggsankey::theme_sankey(base_size = 18) +
+  ggplot2::labs(x = NULL, title = "Viral Taxonomy") +
+  ggplot2::theme(legend.position = "none", plot.title = ggplot2::element_text(hjust = 0.5))
+
+print(plot_sankey2)
+
+ggplot2::ggsave(path_target("plot_sankey2.pdf"), plot = plot_sankey2, width = 12, height = 6)
+ggplot2::ggsave(path_target("plot_sankey2.png"), plot = plot_sankey2, width = 12, height = 6)
+```
+
+# Host Prediction
+
+## Host-Virus Linkages
+
+Analysis of predicted host-virus relationships for 571 medium-to-high quality vOTUs, resulting in 9,061 host linkages (3,230 temperate, 5,831 virulent).
+
+```{r}
+#| label: host-linkage
+
+ctg_vOTU <- ctg_AALY %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::select(contig_id, vOTU_id, lifestyle) %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::mutate(lifestyle = ifelse(any(lifestyle == "temperate"), "temperate", lifestyle)) %>%
+  dplyr::ungroup()
+
+host_vOTU <- merge(chicken_host, ctg_vOTU, by = "contig_id")
+
+vOTU_host_link_life <- host_vOTU %>%
+  dplyr::select(contig_id, vOTU_id, Host.taxonomy, lifestyle) %>%
+  dplyr::filter(vOTU_id %in% count_vOTU$vOTU_id) %>%
+  dplyr::distinct(Host = Host.taxonomy, vOTU_id, lifestyle)
+
+vOTU_host_link_temperate <- vOTU_host_link_life %>%
+  dplyr::filter(lifestyle == "temperate")
+
+vOTU_host_link_virulent <- vOTU_host_link_life %>%
+  dplyr::filter(lifestyle == "virulent")
+
+cat("Total host linkages:", nrow(vOTU_host_link_life), "\n")
+cat("Temperate linkages:", nrow(vOTU_host_link_temperate), "\n")
+cat("Virulent linkages:", nrow(vOTU_host_link_virulent), "\n")
+```
+
+## Host Phylum Distribution
+
+### Virulent Phages
+
+```{r}
+#| label: host-virulent
+
+host_viru_pl <- vOTU_host_link_virulent %>%
+  tidyr::separate(Host, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";") %>%
+  dplyr::select(Phylum, vOTU_id) %>%
+  dplyr::group_by(Phylum) %>%
+  dplyr::summarise(count_vOTU = n()) %>%
+  dplyr::mutate(
+    total_count = sum(count_vOTU),
+    percentage = count_vOTU / total_count * 100
+  ) %>%
+  dplyr::select(Phylum, count_vOTU, percentage) %>%
+  dplyr::ungroup()
+
+cat("Number of phyla hosting virulent phages:", nrow(host_viru_pl), "\n")
+
+sort_host_viru_pl <- host_viru_pl %>%
+  dplyr::arrange(desc(count_vOTU))
+
+head(sort_host_viru_pl)
+```
+
+### Temperate Phages
+
+```{r}
+#| label: host-temperate
+
+host_temper_pl <- vOTU_host_link_temperate %>%
+  tidyr::separate(Host, into = c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), sep = ";") %>%
+  dplyr::select(Phylum, vOTU_id) %>%
+  dplyr::group_by(Phylum) %>%
+  dplyr::summarise(count_vOTU = n()) %>%
+  dplyr::mutate(
+    total_count = sum(count_vOTU),
+    percentage = count_vOTU / total_count * 100
+  ) %>%
+  dplyr::select(Phylum, count_vOTU, percentage) %>%
+  dplyr::ungroup()
+
+cat("Number of phyla hosting temperate phages:", nrow(host_temper_pl), "\n")
+
+sort_host_temper_pl <- host_temper_pl %>%
+  dplyr::arrange(desc(count_vOTU))
+
+head(sort_host_temper_pl)
+```
+
+## Visualization
+
+```{r}
+#| label: fig-host-phylum
+#| fig-cap: "Host phylum distribution for temperate and virulent phages"
+
+# Virulent
+Phylum_virulent <- host_viru_pl %>%
+  dplyr::mutate(
+    Phylum = stringr::str_remove(Phylum, "p__"),
+    count2 = log10(count_vOTU)
+  ) %>%
+  dplyr::arrange(desc(count2))
+
+plot_Phylum_virulent <- ggplot2::ggplot(Phylum_virulent, ggplot2::aes(x = count2, y = reorder(Phylum, count2))) +
+  ggplot2::geom_bar(stat = "identity", fill = "#F5B6A6") +
+  ggplot2::labs(title = "", x = "Number of vOTU (log10)", y = "Virulent") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    axis.ticks = ggplot2::element_line(color = "black", linewidth = 1),
+    axis.line = ggplot2::element_line(color = "black", linewidth = 1),
+    panel.grid.major = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    axis.text = ggplot2::element_text(color = "black", face = "bold", size = 18),
+    axis.title.x = ggplot2::element_text(color = "black", face = "bold", size = 20),
+    axis.title.y = ggplot2::element_text(color = "black", face = "bold", size = 25)
+  )
+
+# Temperate
+Phylum_temperate <- host_temper_pl %>%
+  dplyr::mutate(
+    Phylum = stringr::str_remove(Phylum, "p__"),
+    count2 = log10(count_vOTU)
+  ) %>%
+  dplyr::arrange(desc(count2))
+
+plot_Phylum_temperate <- ggplot2::ggplot(Phylum_temperate, ggplot2::aes(x = count2, y = reorder(Phylum, count2))) +
+  ggplot2::geom_bar(stat = "identity", fill = "#D2E7E6") +
+  ggplot2::labs(title = "", x = "Number of vOTU (log10)", y = "Temperate") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    axis.ticks = ggplot2::element_line(color = "black", linewidth = 1),
+    axis.line = ggplot2::element_line(color = "black", linewidth = 1),
+    panel.grid.major = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    axis.text = ggplot2::element_text(color = "black", face = "bold", size = 18),
+    axis.title.x = ggplot2::element_text(color = "black", face = "bold", size = 20),
+    axis.title.y = ggplot2::element_text(color = "black", face = "bold", size = 25)
+  )
+
+# Combine plots
+combined_Phylum <- plot_Phylum_temperate + plot_Phylum_virulent + patchwork::plot_layout(ncol = 2)
+
+print(combined_Phylum)
+
+ggplot2::ggsave(path_target("combined_Phylum.pdf"), plot = combined_Phylum, width = 11, height = 6)
+ggplot2::ggsave(path_target("combined_Phylum.png"), plot = combined_Phylum, width = 11, height = 6)
+ggplot2::ggsave(path_target("plot_Phylum_virulent.png"), plot = plot_Phylum_virulent, width = 5, height = 8)
+ggplot2::ggsave(path_target("plot_Phylum_temperate.png"), plot = plot_Phylum_temperate, width = 5, height = 8)
+```
+
+# Auxiliary Metabolic Genes (AMGs)
+
+## AMG Identification
+
+Analysis of 43 unique AMG types identified across the AALY dataset.
+
+```{r}
+#| label: amg-analysis
+
+AALY_ctg <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mapping_AALY$Run) %>%
+  dplyr::select(contig_id, study_id)
+
+AMG_Count_raw <- chicken_amg %>%
+  dplyr::filter(contig_id %in% AALY_ctg$contig_id) %>%
+  dplyr::select(contig_id, gene_id, gene_description) %>%
+  dplyr::group_by(gene_description) %>%
+  dplyr::summarise(n_AMG = n())
+
+cat("Unique AMG types:", length(unique(AMG_Count_raw$gene_description)), "\n")
+
+# Top 22 AMGs
+AMG_Count_20 <- AMG_Count_raw %>%
+  dplyr::arrange(desc(n_AMG)) %>%
+  dplyr::slice_head(n = 22)
+
+AMG_Count_20
+
+# Map KO numbers
+AMG_ko <- chicken_amg %>%
+  dplyr::select(gene_id, gene_description, module) %>%
+  unique()
+
+AMG_Count_ko <- merge(AMG_Count_raw, AMG_ko, by = "gene_description")
+
+# Module analysis
+module_raw <- chicken_amg %>%
+  dplyr::filter(contig_id %in% AALY_ctg$contig_id) %>%
+  dplyr::select(contig_id, gene_id, module) %>%
+  dplyr::group_by(module) %>%
+  dplyr::summarise(n_AMG = n())
+
+module_20 <- module_raw %>%
+  dplyr::arrange(desc(n_AMG)) %>%
+  dplyr::slice_head(n = 20)
+```
+
+## Visualization
+
+```{r}
+#| label: fig-amg
+#| fig-cap: "Distribution of top 20 auxiliary metabolic genes"
+
+data <- AMG_Count_20 %>%
+  dplyr::mutate(
+    name = stringr::str_remove_all(gene_description, "\\[.*?\\]"),
+    name = stringr::str_remove(name, "/.*"),
+    name = stringr::str_replace(name, "(([^;]*;){1}[^;]*);.*", "\\1"),
+    name = dplyr::if_else(
+      dplyr::row_number() %in% c(17, 19),
+      stringr::str_replace(name, "([^;]*);.*", "\\1"),
+      name
+    )
+  )
+
+data2 <- data %>%
+  dplyr::group_by(name) %>%
+  dplyr::summarize(dplyr::across(-gene_description, sum), .groups = "drop") %>%
+  as.data.frame()
+
+plot_AMG_count <- ggplot2::ggplot(data2, ggplot2::aes(x = n_AMG, y = reorder(name, n_AMG))) +
+  ggplot2::geom_bar(stat = "identity", fill = "steelblue") +
+  ggplot2::labs(title = "", x = "Count of Viral Genomes", y = "") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(
+    axis.text = ggplot2::element_text(color = "black"),
+    axis.title.x = ggplot2::element_text(color = "black", face = "bold", size = 15)
+  )
+
+print(plot_AMG_count)
+
+ggplot2::ggsave(path_target("plot_AMG_count.png"), plot = plot_AMG_count, width = 11, height = 6)
+ggplot2::ggsave(path_target("plot_AMG_count.pdf"), plot = plot_AMG_count, width = 11, height = 6)
+```
+
+# Output Files
+
+Files written to the target directory, `r paste0("data/", params$name)`:
+
+```{r}
+#| label: list-files-target
+projthis::proj_dir_info(path_target(), tz = "CET")
+```

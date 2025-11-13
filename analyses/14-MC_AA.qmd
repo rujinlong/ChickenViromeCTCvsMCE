@@ -1,0 +1,1568 @@
+---
+title: "14-MC_AA"
+title-block-banner: true
+author:
+  - name: Li Yang
+date: 2025-08-02
+toc: true
+toc-depth: 4
+number-sections: true
+code-fold: true
+code-line-numbers: true
+code-tools: true
+format: 
+  html:
+    embed-resources: true
+    smooth-scroll: true
+    page-layout: full
+reference-location: section
+citation-location: document
+params:
+  name: "14-MC_AA"
+---
+
+**Updated: `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'CET')` CET.**
+
+The purpose of this document is ...
+
+```{r}
+#| label: setup
+#| message: false
+#| include: false
+#| warning: false
+wd <- "analyses"
+if (basename(getwd()) != wd) {
+  setwd(here::here(wd))
+}
+params <- list(name = "14-MC_AA")
+here::i_am(paste0(params$name, ".qmd"), uuid = "79d8cbf2-662f-4290-9e6e-c307304eb75d")
+projthis::proj_create_dir_target(params$name, clean = FALSE)
+path_target <- projthis::proj_path_target(params$name)
+path_source <- projthis::proj_path_source(params$name)
+path_raw <- path_source("00-raw")
+path_resource <- here::here(path_raw, "d00-resource")
+path_data <- here::here(path_raw, paste0("d", params$name))
+dir.create(path_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_data, recursive = TRUE, showWarnings = FALSE)
+dir.create(path_resource, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+#| label: packages
+#| message: false
+
+suppressPackageStartupMessages({
+  library(here)
+  library(conflicted)
+  library(tidyverse)
+  library(data.table)
+  library(DBI)
+  library(RSQLite)
+  library(vegan)
+  library(ape)
+  library(ggpubr)
+  library(ANCOMBC)
+  library(SingleCellExperiment)
+  library(DT)
+  library(phyloseq)
+  library(microbiome)
+  library(mia)
+  library(pheatmap)
+  devtools::load_all()
+})
+
+conflicted::conflicts_prefer(dplyr::filter)
+conflicted::conflicts_prefer(dplyr::select)
+conflicted::conflicts_prefer(dplyr::mutate)
+conflicted::conflicts_prefer(dplyr::summarise)
+conflicted::conflicts_prefer(dplyr::rename)
+
+con <- load_db()
+```
+
+# Load Data
+
+```{r}
+#| label: load-data
+
+chicken_amg <- DBI::dbReadTable(con, "chicken_amg")
+chicken_contig_annotation <- DBI::dbReadTable(con, "chicken_contig_annotation")
+chicken_host <- DBI::dbReadTable(con, "chicken_host")
+metadata417359 <- read.csv(here::here(path_raw, "417359SraRunTable.csv"))
+abundance_contigs_count <- read.delim(here::here(path_raw, "abundance_contigs_count.tsv"))
+abundance_contigs_tmm <- read.delim(here::here(path_raw, "abundance_contigs_trimmed_mean.tsv"))
+```
+
+# Sample Selection and Metadata Preparation
+
+Filter 42-day-old Arbor Acres chickens from Beijing across different feed additive treatments.
+
+```{r}
+#| label: sample-metadata
+
+mappingMCE <- metadata417359 %>%
+  dplyr::filter(
+    geo_loc_name == "China:Beijing",
+    Host_Age == "42-day"
+  ) %>%
+  dplyr::mutate(
+    Sample.Name = substr(Sample.Name, 1, 3),
+    isolation_source = dplyr::case_when(
+      isolation_source %in% c("duodenum", "jejunum", "ileum") ~ "Foregut",
+      isolation_source %in% c("cecum", "colorectum") ~ "Hindgut",
+      TRUE ~ isolation_source
+    ),
+    Sample.Name = dplyr::recode(Sample.Name,
+      CBJ = "CTC",
+      NBJ = "Blank",
+      HBJ = "MCE-H",
+      LBJ = "MCE-L",
+      MBJ = "MCE-M"
+    )
+  )
+
+mappingMCE_for <- mappingMCE %>%
+  dplyr::filter(isolation_source == "Foregut")
+
+mappingMCE_for2 <- mappingMCE_for %>%
+  dplyr::select(Run, Sample.Name)
+
+mappingMCE_hid <- mappingMCE %>%
+  dplyr::filter(isolation_source == "Hindgut")
+
+mappingMCE_hid2 <- mappingMCE_hid %>%
+  dplyr::select(Run, Sample.Name)
+
+cat("Total foregut samples:", nrow(mappingMCE_for), "\n")
+cat("Total hindgut samples:", nrow(mappingMCE_hid), "\n")
+cat("Treatment groups:", paste(unique(mappingMCE$Sample.Name), collapse = ", "), "\n")
+```
+
+# Part I: Foregut Analysis
+
+## Viral Contig Selection and vOTU Abundance
+
+```{r}
+#| label: votu-abundance-tmm-for
+
+MCEAA_contig_annotation <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mappingMCE_for$Run)
+
+MCEAA_h_ctg <- MCEAA_contig_annotation %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::select(contig_repid, vc_id, vOTU_id)
+
+MCEAA_abundance_tmm <- abundance_contigs_tmm %>%
+  dplyr::filter(Contig %in% MCEAA_h_ctg$contig_repid) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_for$Run))
+
+votu_rawt <- MCEAA_abundance_tmm
+
+map_votu <- chicken_contig_annotation %>%
+  dplyr::filter(contig_repid %in% MCEAA_h_ctg$contig_repid) %>%
+  dplyr::select(contig_repid, vOTU_id)
+
+votu_tablet <- merge(votu_rawt, map_votu, by.x = "Contig", by.y = "contig_repid") %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::summarize(dplyr::across(-c(Contig), sum), .groups = "drop") %>%
+  as.data.frame()
+```
+
+## Quality Control and Data Cleaning
+
+```{r}
+#| label: data-cleaning-for
+
+rownames(votu_tablet) <- votu_tablet$vOTU_id
+votu_table <- votu_tablet %>%
+  dplyr::select(-vOTU_id)
+
+ho_raw <- t(votu_table)
+ho_raw <- as.data.frame(ho_raw) %>%
+  tibble::rownames_to_column(var = "rownames") %>%
+  dplyr::filter(rownames %in% mappingMCE_for2$Run) %>%
+  tibble::column_to_rownames(var = "rownames")
+
+row_sums <- rowSums(ho_raw)
+empty_rows <- which(row_sums == 0)
+
+if (length(empty_rows) > 0) {
+  ho_raw <- ho_raw[row_sums > 0, ]
+}
+
+data_hell <- vegan::decostand(ho_raw, method = "hellinger")
+dist_matrix <- vegan::vegdist(data_hell, method = "bray")
+dist_mat <- as.matrix(dist_matrix)
+
+na_positions <- which(is.na(dist_mat), arr.ind = TRUE)
+
+if (nrow(na_positions) > 0) {
+  rows_with_na <- unique(na_positions[, 1])
+  cols_with_na <- unique(na_positions[, 2])
+  
+  samples_to_remove <- unique(c(
+    rownames(dist_mat)[rows_with_na],
+    colnames(dist_mat)[cols_with_na]
+  ))
+  
+  ho_raw_clean <- ho_raw[!rownames(ho_raw) %in% samples_to_remove, ]
+  data_hell_clean <- data_hell[!rownames(data_hell) %in% samples_to_remove, ]
+} else {
+  ho_raw_clean <- ho_raw
+  data_hell_clean <- data_hell
+}
+```
+
+## NMDS Ordination
+
+```{r}
+#| label: nmds-input-for
+
+input_raw <- cbind(rowname = rownames(ho_raw_clean), ho_raw_clean)
+
+mapping <- mappingMCE_for %>%
+  dplyr::select(Run, isolation_source, Sample.Name)
+
+NMDS_input <- merge(input_raw, mapping, by.x = "rowname", by.y = "Run")
+```
+
+```{r}
+#| label: nmds-calculation-for
+
+data <- ho_raw_clean
+data_hell <- vegan::decostand(data, method = "hellinger")
+dist_matrix <- vegan::vegdist(data_hell, method = "bray")
+nmds_result <- vegan::metaMDS(dist_matrix, k = 2, try = 100)
+
+metadata <- NMDS_input
+scores <- as.data.frame(vegan::scores(nmds_result, display = "sites"))
+scores$Sample.Name <- metadata$Sample.Name
+scores$isolation_source <- metadata$isolation_source
+```
+
+```{r}
+#| label: fig-nmds-treatment-for
+#| fig-cap: "NMDS ordination of foregut viral communities by feed additive treatment"
+
+scores$Sample.Name <- factor(scores$Sample.Name, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+plot_NMDS1 <- ggplot2::ggplot(scores, ggplot2::aes(x = NMDS1, y = NMDS2, color = Sample.Name, shape = isolation_source)) + 
+  ggplot2::geom_point(size = 4) + 
+  ggplot2::theme_bw() + 
+  ggplot2::labs(
+    title = "NMDS Ordination by Feed Additive Treatment (Foregut)",
+    x = "NMDS Axis 1",
+    y = "NMDS Axis 2",
+    color = "Treatment",
+    shape = "Gut Segment"
+  ) + 
+  ggplot2::scale_shape_manual(values = c(16, 15, 2, 3, 1)) + 
+  ggplot2::scale_color_manual(values = c("#F5A800", "#FF4EA0", "#5CDB5C", "#43B343", "#006400")) + 
+  ggplot2::theme(
+    axis.text = ggplot2::element_text(color = "black"),
+    axis.title = ggplot2::element_text(color = "black", face = "bold"),
+    plot.title = ggplot2::element_text(hjust = 0.5)
+  )
+
+print(plot_NMDS1)
+
+p_table <- as.data.frame(ho_raw_clean)
+p_table <- p_table %>%
+  tibble::rownames_to_column(var = "Run") %>%
+  merge(mapping, by = "Run") %>%
+  tibble::column_to_rownames(var = "Run")
+
+p_table$Sample.Name <- as.factor(p_table$Sample.Name)
+p_table$isolation_source <- as.factor(p_table$isolation_source)
+
+adonis_resulto_nmds <- vegan::adonis2(
+  dist_matrix ~ Sample.Name,
+  data = p_table,
+  permutations = 999,
+  by = "margin"
+)
+
+print(adonis_resulto_nmds)
+
+ggplot2::ggsave(path_target("plot_NMDS_for.pdf"), plot = plot_NMDS1, width = 8, height = 5)
+ggplot2::ggsave(path_target("plot_NMDS_for.png"), plot = plot_NMDS1, width = 8, height = 5)
+```
+
+## Alpha Diversity Analysis
+
+```{r}
+#| label: alpha-diversity-for
+
+ho_raw2 <- ho_raw
+ho_raw2 <- as.data.frame(ho_raw2)
+y <- ho_raw2
+
+Shannon <- vegan::diversity(y, index = "shannon")
+Simpson <- vegan::diversity(y, index = "simpson")
+observed_species <- vegan::specnumber(y)
+y <- round(y)
+Chao1 <- vegan::estimateR(y)[2, ]
+ACE <- vegan::estimateR(y)[4, ]
+pielou <- vegan::diversity(y, index = "shannon") / log(vegan::specnumber(y), exp(1))
+Richness <- vegan::estimateR(y)[1, ]
+
+resulto <- data.frame(Shannon, Chao1, ACE, pielou, Simpson, Richness)
+
+mapping_div <- mappingMCE_for2 %>%
+  dplyr::select(Run, Sample.Name)
+
+resulto <- resulto %>%
+  tibble::rownames_to_column(var = "Run") %>%
+  merge(mapping_div, by = "Run") %>%
+  tibble::column_to_rownames(var = "Run")
+
+resulto$pielou[resulto$pielou == "Inf"] <- 0.0000001
+```
+
+```{r}
+#| label: fig-alpha-diversity-for
+#| fig-cap: "Alpha diversity indices in foregut samples across feed additive treatments"
+
+diverso <- resulto %>%
+  dplyr::rename(group = Sample.Name)
+
+diverso_long <- diverso %>%
+  tidyr::pivot_longer(
+    cols = c(Shannon, Chao1, ACE, pielou, Simpson, Richness),
+    names_to = "name",
+    values_to = "value"
+  )
+
+diverso_long$group <- factor(diverso_long$group, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+groups <- c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H")
+my_comparisons1 <- combn(groups, 2, simplify = FALSE)
+
+diver_plot_votu <- ggplot2::ggplot(diverso_long, ggplot2::aes(y = value, x = group, group = group, color = group)) + 
+  ggplot2::geom_boxplot(fill = "white", outlier.shape = NA, lwd = 0.8) + 
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(linewidth = 1, colour = "black", linetype = 1),
+    axis.text.x = ggplot2::element_text(
+      color = "black",
+      face = "bold",
+      angle = 45,
+      hjust = 1,
+      size = 8
+    )
+  ) + 
+  ggplot2::scale_color_manual(values = c("#F5A800", "#FF4EA0", "#5CDB5C", "#43B343", "#006400")) + 
+  ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white")) + 
+  ggplot2::geom_jitter(shape = 16, position = ggplot2::position_jitter(0.2), size = 0.6, alpha = 1, color = "black") + 
+  ggpubr::stat_compare_means(
+    comparisons = my_comparisons1,
+    method = "t.test",
+    method.args = list(alternative = "two.sided"),
+    ref.group = ".all.",
+    label = "p.signif",
+    tip.length = 0.05,
+    bracket.size = 0.5
+  ) + 
+  ggplot2::facet_wrap(~name, scales = "free", ncol = 6) + 
+  ggplot2::ylab("Value")
+
+print(diver_plot_votu)
+
+ggplot2::ggsave(path_target("diver_plot_votu_for.pdf"), plot = diver_plot_votu, width = 10, height = 5)
+ggplot2::ggsave(path_target("diver_plot_votu_for.png"), plot = diver_plot_votu, width = 10, height = 5)
+```
+
+## Host-Phage Interaction Analysis
+
+```{r}
+#| label: host-taxonomy-for
+
+ctg_h_AA <- chicken_contig_annotation %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::filter(study_id %in% mappingMCE_for$Run) %>%
+  dplyr::select(contig_id, study_id)
+
+Host_AA <- chicken_host %>%
+  dplyr::filter(contig_id %in% ctg_h_AA$contig_id) %>%
+  dplyr::select(contig_id, Host.taxonomy) %>%
+  dplyr::mutate(Host.taxonomy = gsub("^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;", "", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = gsub(";.*", "", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = ifelse(Host.taxonomy == "", "Unknown", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = gsub("g__", "", Host.taxonomy, fixed = TRUE)) %>%
+  unique()
+```
+
+```{r}
+#| label: host-abundance-count-for
+
+vOTU_h_AA <- chicken_contig_annotation %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::filter(study_id %in% mappingMCE_for$Run) %>%
+  dplyr::select(contig_id, study_id, vOTU_id)
+
+AA_abundance_count <- abundance_contigs_count %>%
+  dplyr::filter(Contig %in% vOTU_h_AA$contig_id) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_for$Run))
+
+votu_raw_count <- AA_abundance_count
+
+map_votu_host <- vOTU_h_AA %>%
+  dplyr::select(contig_id, vOTU_id)
+
+votu_table_count <- merge(votu_raw_count, map_votu_host, by.x = "Contig", by.y = "contig_id") %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::summarize(dplyr::across(-c(Contig), sum), .groups = "drop") %>%
+  as.data.frame()
+
+Host_AA_vOTU <- merge(Host_AA, map_votu_host, by = "contig_id")
+
+abun_Host_AA_vOTU_count <- merge(Host_AA_vOTU, votu_table_count, by = "vOTU_id") %>%
+  dplyr::select(Host.taxonomy, dplyr::one_of(mappingMCE_for$Run)) %>%
+  unique()
+
+abun_Host_AA_count <- abun_Host_AA_vOTU_count %>%
+  dplyr::group_by(Host.taxonomy) %>%
+  dplyr::summarise(dplyr::across(where(is.numeric), sum, na.rm = TRUE), .groups = "drop")
+```
+
+## Differential Abundance Analysis with ANCOMBC2
+
+```{r}
+#| label: ancombc-input-for
+
+input_abundance <- abun_Host_AA_count
+input_abundance <- as.data.frame(input_abundance)
+rownames(input_abundance) <- input_abundance$Host.taxonomy
+input_abundance <- input_abundance %>%
+  dplyr::select(-Host.taxonomy)
+
+tax <- abun_Host_AA_count$Host.taxonomy
+tax <- as.matrix(tax)
+rownames(tax) <- abun_Host_AA_count$Host.taxonomy
+colnames(tax)[1] <- "Genus"
+
+meta_data <- mappingMCE_for %>%
+  dplyr::rename(group = Sample.Name) %>%
+  dplyr::select(Run, group)
+```
+
+```{r}
+#| label: phyloseq-object-for
+
+OTU <- phyloseq::otu_table(input_abundance, taxa_are_rows = TRUE)
+META <- phyloseq::sample_data(meta_data)
+phyloseq::sample_names(META) <- meta_data$Run
+TAX <- phyloseq::tax_table(tax)
+phyloseq::taxa_names(TAX) <- tax
+
+input_table <- phyloseq::phyloseq(OTU, TAX, META)
+
+tse <- mia::convertFromPhyloseq(input_table)
+```
+
+```{r}
+#| label: ancombc-analysis-for
+
+tse$group <- factor(tse$group, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+primary_ancombc2_species_output <- ANCOMBC::ancombc2(
+  data = tse,
+  assay_name = "counts",
+  tax_level = "Genus",
+  fix_formula = "group",
+  p_adj_method = "BY",
+  prv_cut = 0.10,
+  lib_cut = 1000,
+  s0_perc = 0.05,
+  group = "group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  n_cl = 8,
+  verbose = TRUE,
+  global = TRUE,
+  pairwise = FALSE,
+  dunnet = TRUE,
+  trend = FALSE
+)
+```
+
+```{r}
+#| label: ancombc-results-for
+
+abundance_ANCOMBC <- primary_ancombc2_species_output$bias_correct_log_table %>%
+  tibble::rownames_to_column("Genus")
+
+res <- primary_ancombc2_species_output$res
+
+res_trend <- res %>%
+  dplyr::filter(p_groupCTC < 0.05 | `p_groupMCE-H` < 0.05 | `p_groupMCE-L` < 0.05 | `p_groupMCE-M` < 0.05)
+```
+
+## Heatmap Visualization
+
+```{r}
+#| label: heatmap-data-for
+
+df_fig_group <- res_trend %>%
+  dplyr::rename(
+    lfc_groupMCE_L = `lfc_groupMCE-L`,
+    lfc_groupMCE_M = `lfc_groupMCE-M`,
+    lfc_groupMCE_H = `lfc_groupMCE-H`,
+    p_groupMCE_L = `p_groupMCE-L`,
+    p_groupMCE_M = `p_groupMCE-M`,
+    p_groupMCE_H = `p_groupMCE-H`
+  )
+
+df_fig_group <- df_fig_group %>%
+  dplyr::transmute(
+    taxon,
+    valueCTC = round((lfc_groupCTC), 2),
+    valueMCE_L = round((lfc_groupMCE_L), 2),
+    valueMCE_M = round((lfc_groupMCE_M), 2),
+    valueMCE_H = round((lfc_groupMCE_H), 2),
+    p_groupCTC,
+    p_groupMCE_L,
+    p_groupMCE_M,
+    p_groupMCE_H
+  )
+
+df_fig_group <- df_fig_group[order(df_fig_group$taxon), ]
+
+value_data <- df_fig_group[, c("valueCTC", "valueMCE_L", "valueMCE_M", "valueMCE_H")] %>%
+  dplyr::mutate_all(~ round(., 2))
+
+p_data <- df_fig_group[, c("p_groupCTC", "p_groupMCE_L", "p_groupMCE_M", "p_groupMCE_H")]
+
+rownames(value_data) <- df_fig_group$taxon
+colnames(value_data) <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+rownames(p_data) <- df_fig_group$taxon
+colnames(p_data) <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+
+value_data[p_data > 0.05] <- NA
+
+red_color <- "#FF0000"
+blue_color <- "#0000FF"
+white_color <- "#FFFFFF"
+gray_color <- "#CCCCCC"
+
+number_matrix <- apply(value_data, 2, function(x) {
+  ifelse(!is.na(x), as.character(x), "")
+})
+```
+
+```{r}
+#| label: fig-heatmap-genus-for
+#| fig-cap: "Differential abundance of phage host genera in foregut samples across feed additive treatments"
+
+pheatmap_Genus_for <- pheatmap::pheatmap(
+  mat = value_data,
+  color = grDevices::colorRampPalette(c(blue_color, white_color, red_color))(100),
+  breaks = seq(-4.5, 4.5, length.out = 101),
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  main = " ",
+  cellwidth = 25,
+  cellheight = 25,
+  display_numbers = number_matrix,
+  number_color = "black",
+  fontsize_number = 8,
+  fontsize_row = 8,
+  fontsize_col = 8,
+  na_col = gray_color
+)
+
+ggplot2::ggsave(path_target("pheatmap_Genus_for.png"), plot = pheatmap_Genus_for, width = 8, height = 4)
+ggplot2::ggsave(path_target("pheatmap_Genus_for.pdf"), plot = pheatmap_Genus_for, width = 8, height = 4)
+```
+
+## AMG Differential Abundance Analysis (Foregut)
+
+```{r}
+#| label: amg-contig-abundance-for
+
+MCEAA_abundance_count <- abundance_contigs_count %>%
+  dplyr::filter(Contig %in% MCEAA_h_ctg$contig_repid) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_for2$Run))
+
+ctg_abundance <- MCEAA_abundance_count
+```
+
+```{r}
+#| label: ancombc-contig-correction-for
+
+ctg_tablec <- ctg_abundance
+ctgname <- ctg_abundance$Contig
+ctg_tablec <- ctg_tablec %>%
+  dplyr::select(-Contig)
+ctg_tablec <- t(ctg_tablec)
+colnames(ctg_tablec) <- ctgname
+ctg_tablec <- as.data.frame(ctg_tablec)
+ctgtablec <- t(ctg_tablec)
+
+tax <- rownames(ctgtablec)
+tax <- as.matrix(tax)
+rownames(tax) <- tax
+colnames(tax) <- "Contig"
+
+mapping <- mappingMCE_for %>%
+  dplyr::select(Run, Sample.Name)
+meta_data <- mapping
+rownames(meta_data) <- mapping$Run
+meta_data <- as.data.frame(meta_data) %>%
+  dplyr::rename(group = Sample.Name)
+rownames(meta_data) <- mapping$Run
+
+OTU <- phyloseq::otu_table(ctgtablec, taxa_are_rows = TRUE)
+META <- phyloseq::sample_data(meta_data)
+phyloseq::sample_names(META) <- meta_data$Run
+TAX <- phyloseq::tax_table(tax)
+phyloseq::taxa_names(TAX) <- tax
+vc_out <- phyloseq::phyloseq(OTU, TAX, META)
+
+tse <- mia::convertFromPhyloseq(vc_out)
+
+primary_ancombc2_species_output <- ANCOMBC::ancombc2(
+  data = tse,
+  assay_name = "counts",
+  tax_level = "Contig",
+  fix_formula = "group",
+  p_adj_method = "BY",
+  prv_cut = 0.10,
+  lib_cut = 1000,
+  s0_perc = 0.05,
+  group = "group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  n_cl = 8,
+  verbose = TRUE,
+  global = TRUE,
+  pairwise = TRUE,
+  dunnet = FALSE,
+  trend = FALSE
+)
+
+bias_correct_log_table <- primary_ancombc2_species_output$bias_correct_log_table %>%
+  tibble::rownames_to_column("Contig")
+```
+
+```{r}
+#| label: amg-gene-abundance-for
+
+ctg_abundance <- bias_correct_log_table
+chicken_amg2 <- chicken_amg %>%
+  dplyr::select(contig_id, gene_id)
+
+gene_abundance_raw <- base::merge(chicken_amg2, ctg_abundance, by.x = "contig_id", by.y = "Contig", all.y = TRUE)
+
+gene_abundance <- gene_abundance_raw %>%
+  dplyr::select(-contig_id) %>%
+  dplyr::group_by(gene_id) %>%
+  dplyr::summarise(dplyr::across(everything(), sum, na.rm = TRUE)) %>%
+  dplyr::ungroup()
+```
+
+```{r}
+#| label: amg-data-prep-for
+
+mapping <- mappingMCE_for %>%
+  dplyr::select(Run, Sample.Name)
+
+gene_abundance <- gene_abundance %>%
+  dplyr::filter(gene_id != "NA")
+
+genename <- gene_abundance$gene_id
+gene_abundance2 <- gene_abundance %>%
+  dplyr::select(-gene_id)
+gene_abundance2 <- apply(gene_abundance2, 2, as.numeric)
+gene_abundance2 <- t(gene_abundance2)
+
+colnames(gene_abundance2) <- genename
+gene_abundance2 <- as.data.frame(gene_abundance2)
+
+mapping <- as.data.frame(mapping)
+gene_abundance2$Run <- rownames(gene_abundance2)
+data <- base::merge(gene_abundance2, mapping, by.x = "Run", by.y = "Run", all.x = TRUE)
+```
+
+```{r}
+#| label: wilcox-tests-for
+
+data$Group <- data$Sample.Name
+
+groups_to_compare <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+results_wilcox <- list()
+
+for (gene in colnames(data)[2:(ncol(data) - 2)]) {
+  for (grp in groups_to_compare) {
+    data_sub <- data %>%
+      dplyr::filter(Group %in% c(grp, "Blank"))
+    
+    median_grp <- median(data_sub[[gene]][data_sub$Group == grp], na.rm = TRUE)
+    median_blank <- median(data_sub[[gene]][data_sub$Group == "Blank"], na.rm = TRUE)
+    
+    diff_value <- median_grp - median_blank
+    
+    direction <- ifelse(diff_value > 0, "higher",
+                       ifelse(diff_value < 0, "lower", "equal"))
+    
+    test_result <- stats::wilcox.test(
+      data_sub[[gene]] ~ data_sub$Group,
+      subset = data_sub$Group %in% c(grp, "Blank")
+    )
+    
+    results_wilcox[[paste(gene, grp, sep = "_vs_Blank")]] <- list(
+      gene = gene,
+      group = grp,
+      p_value = test_result$p.value,
+      direction = direction,
+      diff_value = diff_value,
+      median_grp = median_grp,
+      median_blank = median_blank
+    )
+  }
+}
+
+results_wilcox_df <- do.call(rbind, lapply(results_wilcox, as.data.frame))
+```
+
+```{r}
+#| label: significant-amgs-for
+
+P5_wilcox_df <- results_wilcox_df %>%
+  dplyr::filter(p_value < 0.05)
+
+chicken_amg3 <- chicken_amg %>%
+  dplyr::select(gene_description, gene_id) %>%
+  unique() %>%
+  dplyr::mutate(gene_description = gsub("\[.*?\]", "", gene_description)) %>%
+  dplyr::mutate(gene_description = gsub("/.*", "", gene_description)) %>%
+  dplyr::mutate(gene_description = gsub("(([^;]*;){1}[^;]*);.*", "\1", gene_description))
+
+P5_wilcox_df_with_id <- merge(P5_wilcox_df, chicken_amg3, by.x = "gene", by.y = "gene_id", all.x = TRUE) %>%
+  dplyr::group_by(gene) %>%
+  dplyr::mutate(
+    gene_description_combined = if (dplyr::n_distinct(gene_description, na.rm = TRUE) > 0) {
+      unique_ids <- unique(stats::na.omit(gene_description))
+      paste(unique_ids, collapse = ", ")
+    } else {
+      NA_character_
+    }
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    row_label = ifelse(!is.na(gene_description_combined) & gene_description_combined != "",
+                      paste0(gene_description_combined, "\n", gene),
+                      gene)
+  ) %>%
+  dplyr::distinct(gene, group, .keep_all = TRUE)
+
+P5_wilcox_df_with_id <- P5_wilcox_df_with_id %>%
+  dplyr::arrange(gene_description_combined, gene)
+
+row_order <- unique(P5_wilcox_df_with_id$row_label)
+```
+
+```{r}
+#| label: amg-heatmap-prep-for
+
+heatmap_data <- P5_wilcox_df_with_id %>%
+  dplyr::select(row_label, group, diff_value) %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = diff_value,
+    values_fill = 0
+  ) %>%
+  as.data.frame()
+
+rownames(heatmap_data) <- heatmap_data$row_label
+heatmap_data$row_label <- NULL
+
+col_order <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+col_order <- col_order[col_order %in% colnames(heatmap_data)]
+heatmap_data <- heatmap_data[, col_order, drop = FALSE]
+heatmap_data <- heatmap_data[match(row_order, rownames(heatmap_data)), , drop = FALSE]
+heatmap_matrix <- as.matrix(heatmap_data)
+
+display_matrix <- P5_wilcox_df_with_id %>%
+  dplyr::mutate(
+    display_text = ifelse(p_value < 0.001,
+                         sprintf("P<0.001\ndiff=%.2f", diff_value),
+                         sprintf("P=%.3f\ndiff=%.2f", p_value, diff_value))
+  ) %>%
+  dplyr::select(row_label, group, display_text) %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = display_text,
+    values_fill = ""
+  ) %>%
+  as.data.frame()
+
+rownames(display_matrix) <- display_matrix$row_label
+display_matrix$row_label <- NULL
+display_matrix <- display_matrix[, col_order, drop = FALSE]
+display_matrix <- display_matrix[match(rownames(heatmap_matrix), rownames(display_matrix)), , drop = FALSE]
+display_matrix <- as.matrix(display_matrix)
+
+common_rows <- base::intersect(rownames(heatmap_matrix), rownames(display_matrix))
+common_cols <- base::intersect(colnames(heatmap_matrix), colnames(display_matrix))
+heatmap_matrix <- heatmap_matrix[common_rows, common_cols, drop = FALSE]
+display_matrix <- display_matrix[common_rows, common_cols, drop = FALSE]
+```
+
+```{r}
+#| label: fig-amg-heatmap-for
+#| fig-cap: "Differential abundance of auxiliary metabolic genes in foregut samples across feed additive treatments"
+
+blue_color <- "#2b8cbe"
+white_color <- "white"
+red_color <- "#e41a1c"
+
+max_val <- max(abs(heatmap_matrix), na.rm = TRUE)
+if (max_val == 0) max_val <- 1
+breaks <- seq(-max_val, max_val, length.out = 101)
+
+pheatmap_AMG_for <- pheatmap::pheatmap(
+  mat = heatmap_matrix,
+  color = grDevices::colorRampPalette(c(blue_color, white_color, red_color))(100),
+  breaks = breaks,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  main = "Differences in AMG Expression (Foregut)",
+  cellwidth = 36,
+  cellheight = 36,
+  display_numbers = display_matrix,
+  number_color = "black",
+  fontsize_number = 8,
+  fontsize_row = 7,
+  fontsize_col = 10,
+  na_col = "grey90",
+  border_color = "grey80"
+)
+
+print(pheatmap_AMG_for)
+
+ggplot2::ggsave(path_target("pheatmap_AMG_for.png"), plot = pheatmap_AMG_for, width = 5, height = 3)
+ggplot2::ggsave(path_target("pheatmap_AMG_for.pdf"), plot = pheatmap_AMG_for, width = 5, height = 3)
+```
+
+# Part II: Hindgut Virome Analysis
+
+## Hindgut vOTU Abundance Preparation
+
+```{r}
+#| label: hindgut-votu-abundance
+
+MCEAA_contig_annotation_hid <- chicken_contig_annotation %>%
+  dplyr::filter(study_id %in% mappingMCE_hid$Run)
+
+MCEAA_h_ctg_hid <- MCEAA_contig_annotation_hid %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::select(contig_repid, vc_id, vOTU_id)
+
+MCEAA_abundance_tmm_hid <- abundance_contigs_tmm %>%
+  dplyr::filter(Contig %in% MCEAA_h_ctg_hid$contig_repid) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_hid$Run))
+
+votu_rawt_hid <- MCEAA_abundance_tmm_hid
+
+map_votu_hid <- chicken_contig_annotation %>%
+  dplyr::filter(contig_repid %in% MCEAA_h_ctg_hid$contig_repid) %>%
+  dplyr::select(contig_repid, vOTU_id)
+
+votu_tablet_hid <- merge(votu_rawt_hid, map_votu_hid, by.x = "Contig", by.y = "contig_repid") %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::summarize(dplyr::across(-c(Contig), sum), .groups = "drop") %>%
+  as.data.frame()
+```
+
+## Hindgut Data Quality Control
+
+```{r}
+#| label: hindgut-data-cleaning
+
+rownames(votu_tablet_hid) <- votu_tablet_hid$vOTU_id
+votu_table_hid <- votu_tablet_hid %>%
+  dplyr::select(-vOTU_id)
+
+ho_raw_hid <- t(votu_table_hid)
+ho_raw_hid <- as.data.frame(ho_raw_hid) %>%
+  tibble::rownames_to_column(var = "rownames") %>%
+  dplyr::filter(rownames %in% mappingMCE_hid2$Run) %>%
+  tibble::column_to_rownames(var = "rownames")
+
+row_sums_hid <- rowSums(ho_raw_hid)
+empty_rows_hid <- which(row_sums_hid == 0)
+
+if (length(empty_rows_hid) > 0) {
+  ho_raw_hid <- ho_raw_hid[row_sums_hid > 0, ]
+}
+
+data_hell_hid <- vegan::decostand(ho_raw_hid, method = "hellinger")
+dist_matrix_hid <- vegan::vegdist(data_hell_hid, method = "bray")
+dist_mat_hid <- as.matrix(dist_matrix_hid)
+
+na_positions_hid <- which(is.na(dist_mat_hid), arr.ind = TRUE)
+
+if (nrow(na_positions_hid) > 0) {
+  rows_with_na_hid <- unique(na_positions_hid[, 1])
+  cols_with_na_hid <- unique(na_positions_hid[, 2])
+  
+  samples_to_remove_hid <- unique(c(
+    rownames(dist_mat_hid)[rows_with_na_hid],
+    colnames(dist_mat_hid)[cols_with_na_hid]
+  ))
+  
+  ho_raw_clean_hid <- ho_raw_hid[!rownames(ho_raw_hid) %in% samples_to_remove_hid, ]
+  data_hell_clean_hid <- data_hell_hid[!rownames(data_hell_hid) %in% samples_to_remove_hid, ]
+} else {
+  ho_raw_clean_hid <- ho_raw_hid
+  data_hell_clean_hid <- data_hell_hid
+}
+```
+
+## Hindgut NMDS Analysis
+
+```{r}
+#| label: hindgut-nmds
+
+input_raw_hid <- cbind(rowname = rownames(ho_raw_clean_hid), ho_raw_clean_hid)
+
+mapping_hid <- mappingMCE_hid %>%
+  dplyr::select(Run, isolation_source, Sample.Name)
+
+NMDS_input_hid <- merge(input_raw_hid, mapping_hid, by.x = "rowname", by.y = "Run")
+
+data_hid <- ho_raw_clean_hid
+data_hell_hid <- vegan::decostand(data_hid, method = "hellinger")
+dist_matrix_hid <- vegan::vegdist(data_hell_hid, method = "bray")
+nmds_result_hid <- vegan::metaMDS(dist_matrix_hid, k = 2, try = 100)
+
+metadata_hid <- NMDS_input_hid
+scores_hid <- as.data.frame(vegan::scores(nmds_result_hid, display = "sites"))
+scores_hid$Sample.Name <- metadata_hid$Sample.Name
+scores_hid$isolation_source <- metadata_hid$isolation_source
+```
+
+```{r}
+#| label: fig-nmds-hindgut
+#| fig-cap: "NMDS ordination of hindgut viral communities by feed additive treatment"
+
+scores_hid$Sample.Name <- factor(scores_hid$Sample.Name, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+plot_NMDS_hid <- ggplot2::ggplot(scores_hid, ggplot2::aes(x = NMDS1, y = NMDS2, color = Sample.Name, shape = isolation_source)) + 
+  ggplot2::geom_point(size = 4) + 
+  ggplot2::theme_bw() + 
+  ggplot2::labs(
+    title = "NMDS Ordination - Hindgut Samples",
+    x = "NMDS Axis 1",
+    y = "NMDS Axis 2",
+    color = "Treatment",
+    shape = "Gut Segment"
+  ) + 
+  ggplot2::scale_shape_manual(values = c(2, 15, 16, 2, 3, 1)) + 
+  ggplot2::scale_color_manual(values = c("#F5A800", "#FF4EA0", "#5CDB5C", "#43B343", "#006400")) + 
+  ggplot2::theme(
+    axis.text = ggplot2::element_text(color = "black"),
+    axis.title = ggplot2::element_text(color = "black", face = "bold"),
+    plot.title = ggplot2::element_text(hjust = 0.5)
+  )
+
+print(plot_NMDS_hid)
+
+p_table_hid <- as.data.frame(ho_raw_clean_hid)
+p_table_hid <- p_table_hid %>%
+  tibble::rownames_to_column(var = "Run") %>%
+  merge(mapping_hid, by = "Run") %>%
+  tibble::column_to_rownames(var = "Run")
+
+p_table_hid$Sample.Name <- as.factor(p_table_hid$Sample.Name)
+p_table_hid$isolation_source <- as.factor(p_table_hid$isolation_source)
+
+adonis_resulto_nmds_hid <- vegan::adonis2(
+  dist_matrix_hid ~ Sample.Name,
+  data = p_table_hid,
+  permutations = 999,
+  by = "margin"
+)
+
+print(adonis_resulto_nmds_hid)
+
+ggplot2::ggsave(path_target("plot_NMDS_hid.pdf"), plot = plot_NMDS_hid, width = 8, height = 5)
+ggplot2::ggsave(path_target("plot_NMDS_hid.png"), plot = plot_NMDS_hid, width = 8, height = 5)
+```
+
+## Hindgut Alpha Diversity
+
+```{r}
+#| label: hindgut-alpha-diversity
+
+ho_raw2_hid <- ho_raw_hid
+ho_raw2_hid <- as.data.frame(ho_raw2_hid)
+y_hid <- ho_raw2_hid
+
+Shannon_hid <- vegan::diversity(y_hid, index = "shannon")
+Simpson_hid <- vegan::diversity(y_hid, index = "simpson")
+observed_species_hid <- vegan::specnumber(y_hid)
+y_hid <- round(y_hid)
+Chao1_hid <- vegan::estimateR(y_hid)[2, ]
+ACE_hid <- vegan::estimateR(y_hid)[4, ]
+pielou_hid <- vegan::diversity(y_hid, index = "shannon") / log(vegan::specnumber(y_hid), exp(1))
+Richness_hid <- vegan::estimateR(y_hid)[1, ]
+
+resulto_hid <- data.frame(Shannon_hid, Chao1_hid, ACE_hid, pielou_hid, Simpson_hid, Richness_hid)
+names(resulto_hid) <- c("Shannon", "Chao1", "ACE", "pielou", "Simpson", "Richness")
+
+mapping_hid2 <- mappingMCE_hid2 %>%
+  dplyr::select(Run, Sample.Name)
+
+resulto_hid <- resulto_hid %>%
+  tibble::rownames_to_column(var = "Run") %>%
+  merge(mapping_hid2, by = "Run") %>%
+  tibble::column_to_rownames(var = "Run")
+
+resulto_hid$pielou[resulto_hid$pielou == "Inf"] <- 0.0000001
+```
+
+```{r}
+#| label: fig-hindgut-diversity
+#| fig-cap: "Alpha diversity indices in hindgut samples across feed additive treatments"
+
+diverso_hid <- resulto_hid %>%
+  dplyr::rename(group = Sample.Name)
+
+diverso_long_hid <- divero_hid %>%
+  tidyr::pivot_longer(
+    cols = c(Shannon, Chao1, ACE, pielou, Simpson, Richness),
+    names_to = "name",
+    values_to = "value"
+  )
+
+diverso_long_hid$group <- factor(divero_long_hid$group, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+groups_hid <- c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H")
+my_comparisons1_hid <- combn(groups_hid, 2, simplify = FALSE)
+
+diver_plot_votu_hid <- ggplot2::ggplot(divero_long_hid, ggplot2::aes(y = value, x = group, group = group, color = group)) + 
+  ggplot2::geom_boxplot(fill = "white", outlier.shape = NA, lwd = 0.8) + 
+  ggplot2::theme(
+    axis.line = ggplot2::element_line(linewidth = 1, colour = "black", linetype = 1),
+    axis.text.x = ggplot2::element_text(
+      color = "black",
+      face = "bold",
+      angle = 45,
+      hjust = 1,
+      size = 8
+    )
+  ) + 
+  ggplot2::scale_color_manual(values = c("#F5A800", "#FF4EA0", "#5CDB5C", "#43B343", "#006400")) + 
+  ggplot2::theme(panel.background = ggplot2::element_rect(fill = "white")) + 
+  ggplot2::geom_jitter(shape = 16, position = ggplot2::position_jitter(0.2), size = 0.6, alpha = 1, color = "black") + 
+  ggpubr::stat_compare_means(
+    comparisons = my_comparisons1_hid,
+    method = "t.test",
+    method.args = list(alternative = "two.sided"),
+    ref.group = ".all.",
+    label = "p.signif",
+    tip.length = 0.05,
+    bracket.size = 0.5
+  ) + 
+  ggplot2::facet_wrap(~name, scales = "free", ncol = 6) + 
+  ggplot2::ylab("Value")
+
+print(diver_plot_votu_hid)
+
+ggplot2::ggsave(path_target("diver_plot_votu_hid.pdf"), plot = diver_plot_votu_hid, width = 10, height = 5)
+ggplot2::ggsave(path_target("diver_plot_votu_hid.png"), plot = diver_plot_votu_hid, width = 10, height = 5)
+```
+
+## Hindgut Host-Phage Analysis
+
+```{r}
+#| label: hindgut-host-taxonomy
+
+ctg_h_AA_hid <- chicken_contig_annotation %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::filter(study_id %in% mappingMCE_hid$Run) %>%
+  dplyr::select(contig_id, study_id)
+
+Host_AA_hid <- chicken_host %>%
+  dplyr::filter(contig_id %in% ctg_h_AA_hid$contig_id) %>%
+  dplyr::select(contig_id, Host.taxonomy) %>%
+  dplyr::mutate(Host.taxonomy = gsub("^[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;", "", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = gsub(";.*", "", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = ifelse(Host.taxonomy == "", "Unknown", Host.taxonomy)) %>%
+  dplyr::mutate(Host.taxonomy = gsub("g__", "", Host.taxonomy, fixed = TRUE)) %>%
+  unique()
+```
+
+```{r}
+#| label: hindgut-host-abundance
+
+vOTU_h_AA_hid <- chicken_contig_annotation %>%
+  dplyr::filter(contig_id == contig_repid) %>%
+  dplyr::filter(checkv_quality_score < 4) %>%
+  dplyr::filter(study_id %in% mappingMCE_hid$Run) %>%
+  dplyr::select(contig_id, study_id, vOTU_id)
+
+AA_abundance_count_hid <- abundance_contigs_count %>%
+  dplyr::filter(Contig %in% vOTU_h_AA_hid$contig_id) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_hid$Run))
+
+votu_raw_count_hid <- AA_abundance_count_hid
+
+map_votu_hid <- vOTU_h_AA_hid %>%
+  dplyr::select(contig_id, vOTU_id)
+
+votu_table_count_hid <- merge(votu_raw_count_hid, map_votu_hid, by.x = "Contig", by.y = "contig_id") %>%
+  dplyr::group_by(vOTU_id) %>%
+  dplyr::summarize(dplyr::across(-c(Contig), sum), .groups = "drop") %>%
+  as.data.frame()
+
+Host_AA_vOTU_hid <- merge(Host_AA_hid, map_votu_hid, by = "contig_id")
+
+abun_Host_AA_vOTU_count_hid <- merge(Host_AA_vOTU_hid, votu_table_count_hid, by = "vOTU_id") %>%
+  dplyr::select(Host.taxonomy, dplyr::one_of(mappingMCE_hid$Run)) %>%
+  unique()
+
+abun_Host_AA_count_hid <- abun_Host_AA_vOTU_count_hid %>%
+  dplyr::group_by(Host.taxonomy) %>%
+  dplyr::summarise(dplyr::across(where(is.numeric), sum, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+#| label: hindgut-ancombc-prep
+
+input_abundance_hid <- abun_Host_AA_count_hid
+input_abundance_hid <- as.data.frame(input_abundance_hid)
+rownames(input_abundance_hid) <- input_abundance_hid$Host.taxonomy
+input_abundance_hid <- input_abundance_hid %>%
+  dplyr::select(-Host.taxonomy)
+
+tax_hid <- abun_Host_AA_count_hid$Host.taxonomy
+tax_hid <- as.matrix(tax_hid)
+rownames(tax_hid) <- abun_Host_AA_count_hid$Host.taxonomy
+colnames(tax_hid)[1] <- "Genus"
+
+meta_data_hid <- mappingMCE_hid %>%
+  dplyr::rename(group = Sample.Name) %>%
+  dplyr::select(Run, group)
+```
+
+```{r}
+#| label: phyloseq-object-hindgut
+
+OTU_hid <- phyloseq::otu_table(input_abundance_hid, taxa_are_rows = TRUE)
+META_hid <- phyloseq::sample_data(meta_data_hid)
+phyloseq::sample_names(META_hid) <- meta_data_hid$Run
+TAX_hid <- phyloseq::tax_table(tax_hid)
+phyloseq::taxa_names(TAX_hid) <- tax_hid
+
+input_table_hid <- phyloseq::phyloseq(OTU_hid, TAX_hid, META_hid)
+
+tse_hid <- mia::convertFromPhyloseq(input_table_hid)
+```
+
+```{r}
+#| label: ancombc-analysis-hindgut
+
+tse_hid$group <- factor(tse_hid$group, levels = c("Blank", "CTC", "MCE-L", "MCE-M", "MCE-H"))
+
+primary_ancombc2_species_output_hid <- ANCOMBC::ancombc2(
+  data = tse_hid,
+  assay_name = "counts",
+  tax_level = "Genus",
+  fix_formula = "group",
+  p_adj_method = "BY",
+  prv_cut = 0.10,
+  lib_cut = 1000,
+  s0_perc = 0.05,
+  group = "group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  n_cl = 8,
+  verbose = TRUE,
+  global = TRUE,
+  pairwise = FALSE,
+  dunnet = TRUE,
+  trend = FALSE
+)
+```
+
+```{r}
+#| label: ancombc-results-hindgut
+
+res_hid <- primary_ancombc2_species_output_hid$res
+
+res_trend_hid <- res_hid %>%
+  dplyr::filter(p_groupCTC < 0.05 | `p_groupMCE-H` < 0.05 | `p_groupMCE-L` < 0.05 | `p_groupMCE-M` < 0.05)
+```
+
+```{r}
+#| label: heatmap-data-hindgut
+
+df_fig_group_hid <- res_trend_hid %>%
+  dplyr::rename(
+    lfc_groupMCE_L = `lfc_groupMCE-L`,
+    lfc_groupMCE_M = `lfc_groupMCE-M`,
+    lfc_groupMCE_H = `lfc_groupMCE-H`,
+    p_groupMCE_L = `p_groupMCE-L`,
+    p_groupMCE_M = `p_groupMCE-M`,
+    p_groupMCE_H = `p_groupMCE-H`
+  )
+
+df_fig_group_hid <- df_fig_group_hid %>%
+  dplyr::transmute(
+    taxon,
+    valueCTC = round((lfc_groupCTC), 2),
+    valueMCE_L = round((lfc_groupMCE_L), 2),
+    valueMCE_M = round((lfc_groupMCE_M), 2),
+    valueMCE_H = round((lfc_groupMCE_H), 2),
+    p_groupCTC,
+    p_groupMCE_L,
+    p_groupMCE_M,
+    p_groupMCE_H
+  )
+
+df_fig_group_hid <- df_fig_group_hid[order(df_fig_group_hid$taxon), ]
+
+value_data_hid <- df_fig_group_hid[, c("valueCTC", "valueMCE_L", "valueMCE_M", "valueMCE_H")] %>%
+  dplyr::mutate_all(~ round(., 2))
+
+p_data_hid <- df_fig_group_hid[, c("p_groupCTC", "p_groupMCE_L", "p_groupMCE_M", "p_groupMCE_H")]
+
+rownames(value_data_hid) <- df_fig_group_hid$taxon
+colnames(value_data_hid) <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+rownames(p_data_hid) <- df_fig_group_hid$taxon
+colnames(p_data_hid) <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+
+value_data_hid[p_data_hid > 0.05] <- NA
+
+number_matrix_hid <- apply(value_data_hid, 2, function(x) {
+  ifelse(!is.na(x), as.character(x), "")
+})
+```
+
+```{r}
+#| label: fig-heatmap-genus-hindgut
+#| fig-cap: "Differential abundance of phage host genera in hindgut samples across feed additive treatments"
+
+pheatmap_Genus_hid <- pheatmap::pheatmap(
+  mat = value_data_hid,
+  color = grDevices::colorRampPalette(c(blue_color, white_color, red_color))(100),
+  breaks = seq(-4.5, 4.5, length.out = 101),
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  main = " ",
+  cellwidth = 25,
+  cellheight = 25,
+  display_numbers = number_matrix_hid,
+  number_color = "black",
+  fontsize_number = 8,
+  fontsize_row = 8,
+  fontsize_col = 8,
+  na_col = gray_color
+)
+
+ggplot2::ggsave(path_target("pheatmap_Genus_hid.png"), plot = pheatmap_Genus_hid, width = 8, height = 4)
+ggplot2::ggsave(path_target("pheatmap_Genus_hid.pdf"), plot = pheatmap_Genus_hid, width = 8, height = 4)
+```
+
+## AMG Differential Abundance Analysis (Hindgut)
+
+```{r}
+#| label: amg-contig-abundance-hindgut
+
+MCEAA_abundance_count_hid <- abundance_contigs_count %>%
+  dplyr::filter(Contig %in% MCEAA_h_ctg$contig_repid) %>%
+  dplyr::select(Contig, dplyr::one_of(mappingMCE_hid2$Run))
+
+ctg_abundance_hid <- MCEAA_abundance_count_hid
+```
+
+```{r}
+#| label: ancombc-contig-correction-hindgut
+
+ctg_tablec_hid <- ctg_abundance_hid
+ctgname_hid <- ctg_abundance_hid$Contig
+ctg_tablec_hid <- ctg_tablec_hid %>%
+  dplyr::select(-Contig)
+ctg_tablec_hid <- t(ctg_tablec_hid)
+colnames(ctg_tablec_hid) <- ctgname_hid
+ctg_tablec_hid <- as.data.frame(ctg_tablec_hid)
+ctgtablec_hid <- t(ctg_tablec_hid)
+
+tax_hid <- rownames(ctgtablec_hid)
+tax_hid <- as.matrix(tax_hid)
+rownames(tax_hid) <- tax_hid
+colnames(tax_hid) <- "Contig"
+
+mapping_hid <- mappingMCE_hid %>%
+  dplyr::select(Run, Sample.Name)
+meta_data_hid <- mapping_hid
+rownames(meta_data_hid) <- mapping_hid$Run
+meta_data_hid <- as.data.frame(meta_data_hid) %>%
+  dplyr::rename(group = Sample.Name)
+rownames(meta_data_hid) <- mapping_hid$Run
+
+OTU_hid <- phyloseq::otu_table(ctgtablec_hid, taxa_are_rows = TRUE)
+META_hid <- phyloseq::sample_data(meta_data_hid)
+phyloseq::sample_names(META_hid) <- meta_data_hid$Run
+TAX_hid <- phyloseq::tax_table(tax_hid)
+phyloseq::taxa_names(TAX_hid) <- tax_hid
+vc_out_hid <- phyloseq::phyloseq(OTU_hid, TAX_hid, META_hid)
+
+tse_hid <- mia::convertFromPhyloseq(vc_out_hid)
+
+primary_ancombc2_species_output_hid <- ANCOMBC::ancombc2(
+  data = tse_hid,
+  assay_name = "counts",
+  tax_level = "Contig",
+  fix_formula = "group",
+  p_adj_method = "BY",
+  prv_cut = 0.10,
+  lib_cut = 1000,
+  s0_perc = 0.05,
+  group = "group",
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  alpha = 0.05,
+  n_cl = 8,
+  verbose = TRUE,
+  global = TRUE,
+  pairwise = TRUE,
+  dunnet = FALSE,
+  trend = FALSE
+)
+
+bias_correct_log_table_hid <- primary_ancombc2_species_output_hid$bias_correct_log_table %>%
+  tibble::rownames_to_column("Contig")
+```
+
+```{r}
+#| label: amg-gene-abundance-hindgut
+
+ctg_abundance_hid <- bias_correct_log_table_hid
+chicken_amg2 <- chicken_amg %>%
+  dplyr::select(contig_id, gene_id)
+
+gene_abundance_raw_hid <- base::merge(chicken_amg2, ctg_abundance_hid, by.x = "contig_id", by.y = "Contig", all.y = TRUE)
+
+gene_abundance_hid <- gene_abundance_raw_hid %>%
+  dplyr::select(-contig_id) %>%
+  dplyr::group_by(gene_id) %>%
+  dplyr::summarise(dplyr::across(everything(), sum, na.rm = TRUE)) %>%
+  dplyr::ungroup()
+```
+
+```{r}
+#| label: amg-data-prep-hindgut
+
+mapping <- mappingMCE %>%
+  dplyr::select(Run, Sample.Name)
+
+gene_abundance_hid <- gene_abundance_hid %>%
+  dplyr::filter(gene_id != "NA")
+
+genename_hid <- gene_abundance_hid$gene_id
+gene_abundance2_hid <- gene_abundance_hid %>%
+  dplyr::select(-gene_id)
+gene_abundance2_hid <- apply(gene_abundance2_hid, 2, as.numeric)
+gene_abundance2_hid <- t(gene_abundance2_hid)
+
+colnames(gene_abundance2_hid) <- genename_hid
+gene_abundance2_hid <- as.data.frame(gene_abundance2_hid)
+
+mapping <- as.data.frame(mapping)
+gene_abundance2_hid$Run <- rownames(gene_abundance2_hid)
+data_hid <- base::merge(gene_abundance2_hid, mapping, by.x = "Run", by.y = "Run", all.x = TRUE)
+```
+
+```{r}
+#| label: wilcox-tests-hindgut
+
+data_hid$Group <- data_hid$Sample.Name
+
+groups_to_compare <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+results_wilcox_hid <- list()
+
+for (gene in colnames(data_hid)[2:(ncol(data_hid) - 2)]) {
+  for (grp in groups_to_compare) {
+    data_sub_hid <- data_hid %>%
+      dplyr::filter(Group %in% c(grp, "Blank"))
+    
+    median_grp_hid <- median(data_sub_hid[[gene]][data_sub_hid$Group == grp], na.rm = TRUE)
+    median_blank_hid <- median(data_sub_hid[[gene]][data_sub_hid$Group == "Blank"], na.rm = TRUE)
+    
+    diff_value_hid <- median_grp_hid - median_blank_hid
+    
+    direction_hid <- ifelse(diff_value_hid > 0, "higher",
+                       ifelse(diff_value_hid < 0, "lower", "equal"))
+    
+    test_result_hid <- stats::wilcox.test(
+      data_sub_hid[[gene]] ~ data_sub_hid$Group,
+      subset = data_sub_hid$Group %in% c(grp, "Blank")
+    )
+    
+    results_wilcox_hid[[paste(gene, grp, sep = "_vs_Blank")]] <- list(
+      gene = gene,
+      group = grp,
+      p_value = test_result_hid$p.value,
+      direction = direction_hid,
+      diff_value = diff_value_hid,
+      median_grp = median_grp_hid,
+      median_blank = median_blank_hid
+    )
+  }
+}
+
+results_wilcox_df_hid <- do.call(rbind, lapply(results_wilcox_hid, as.data.frame))
+```
+
+```{r}
+#| label: significant-amgs-hindgut
+
+P5_wilcox_df_hid <- results_wilcox_df_hid %>%
+  dplyr::filter(p_value < 0.05)
+
+chicken_amg3 <- chicken_amg %>%
+  dplyr::select(gene_description, gene_id) %>%
+  unique() %>%
+  dplyr::mutate(gene_description = gsub("\\\[.*?\\\\\]", "", gene_description)) %>%
+  dplyr::mutate(gene_description = gsub("/.*", "", gene_description)) %>%
+  dplyr::mutate(gene_description = gsub("(([^;]*;){1}[^;]*);.*", "\\1", gene_description))
+
+P5_wilcox_df_with_id_hid <- merge(P5_wilcox_df_hid, chicken_amg3, by.x = "gene", by.y = "gene_id", all.x = TRUE) %>%
+  dplyr::mutate(gene_description = dplyr::case_when(
+    dplyr::row_number() %in% c(4) ~ gsub("([^,]*);.*", "\\1", gene_description),
+    TRUE ~ gene_description
+  ))
+
+P5_wilcox_df_with_id_hid <- P5_wilcox_df_with_id_hid %>%
+  dplyr::group_by(gene) %>%
+  dplyr::mutate(
+    gene_description_combined = if (dplyr::n_distinct(gene_description, na.rm = TRUE) > 0) {
+      unique_ids <- unique(stats::na.omit(gene_description))
+      paste(unique_ids, collapse = ", ")
+    } else {
+      NA_character_
+    }
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    row_label = ifelse(!is.na(gene_description_combined) & gene_description_combined != "",
+                      paste0(gene_description_combined, "\n", gene),
+                      gene)
+  ) %>%
+  dplyr::distinct(gene, group, .keep_all = TRUE)
+
+P5_wilcox_df_with_id_hid <- P5_wilcox_df_with_id_hid %>%
+  dplyr::arrange(gene_description_combined, gene)
+
+row_order_hid <- unique(P5_wilcox_df_with_id_hid$row_label)
+```
+
+```{r}
+#| label: amg-heatmap-prep-hindgut
+
+heatmap_data_hid <- P5_wilcox_df_with_id_hid %>%
+  dplyr::select(row_label, group, diff_value) %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = diff_value,
+    values_fill = 0
+  ) %>%
+  as.data.frame()
+
+rownames(heatmap_data_hid) <- heatmap_data_hid$row_label
+heatmap_data_hid$row_label <- NULL
+
+col_order <- c("CTC", "MCE-L", "MCE-M", "MCE-H")
+col_order <- col_order[col_order %in% colnames(heatmap_data_hid)]
+heatmap_data_hid <- heatmap_data_hid[, col_order, drop = FALSE]
+heatmap_data_hid <- heatmap_data_hid[match(row_order_hid, rownames(heatmap_data_hid)), , drop = FALSE]
+heatmap_matrix_hid <- as.matrix(heatmap_data_hid)
+
+display_matrix_hid <- P5_wilcox_df_with_id_hid %>%
+  dplyr::mutate(
+    display_text = ifelse(p_value < 0.001,
+                         sprintf("P<0.001\ndiff=%.2f", diff_value),
+                         sprintf("P=%.3f\ndiff=%.2f", p_value, diff_value))
+  ) %>%
+  dplyr::select(row_label, group, display_text) %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = display_text,
+    values_fill = ""
+  ) %>%
+  as.data.frame()
+
+rownames(display_matrix_hid) <- display_matrix_hid$row_label
+display_matrix_hid$row_label <- NULL
+display_matrix_hid <- display_matrix_hid[, col_order, drop = FALSE]
+display_matrix_hid <- display_matrix_hid[match(rownames(heatmap_matrix_hid), rownames(display_matrix_hid)), , drop = FALSE]
+display_matrix_hid <- as.matrix(display_matrix_hid)
+
+common_rows_hid <- base::intersect(rownames(heatmap_matrix_hid), rownames(display_matrix_hid))
+common_cols_hid <- base::intersect(colnames(heatmap_matrix_hid), colnames(display_matrix_hid))
+heatmap_matrix_hid <- heatmap_matrix_hid[common_rows_hid, common_cols_hid, drop = FALSE]
+display_matrix_hid <- display_matrix_hid[common_rows_hid, common_cols_hid, drop = FALSE]
+```
+
+```{r}
+#| label: fig-amg-heatmap-hindgut
+#| fig-cap: "Differential abundance of auxiliary metabolic genes in hindgut samples across feed additive treatments"
+
+max_val_hid <- max(abs(heatmap_matrix_hid), na.rm = TRUE)
+if (max_val_hid == 0) max_val_hid <- 1
+breaks_hid <- seq(-max_val_hid, max_val_hid, length.out = 101)
+
+pheatmap_AMG_hid <- pheatmap::pheatmap(
+  mat = heatmap_matrix_hid,
+  color = grDevices::colorRampPalette(c(blue_color, white_color, red_color))(100),
+  breaks = breaks_hid,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  main = "Differences in AMG Expression - Hindgut",
+  cellwidth = 36,
+  cellheight = 36,
+  display_numbers = display_matrix_hid,
+  number_color = "black",
+  fontsize_number = 8,
+  fontsize_row = 7,
+  fontsize_col = 10,
+  na_col = "grey90",
+  border_color = "grey80"
+)
+
+print(pheatmap_AMG_hid)
+
+ggplot2::ggsave(path_target("pheatmap_AMG_hid.png"), plot = pheatmap_AMG_hid, width = 5, height = 8)
+ggplot2::ggsave(path_target("pheatmap_AMG_hid.pdf"), plot = pheatmap_AMG_hid, width = 5, height = 8)
+```
+
+# Output Files
+
+Files written to the target directory, `r paste0("data/", params$name)`:
+
+```{r}
+#| label: list-files-target
+
+projthis::proj_dir_info(path_target(), tz = "CET")
+```
+
+```
