@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Investigating the chicken gut virome dynamics and the differential effects of antibiotic vs. phytogenic supplementation">
+    <title>Chicken Gut Virome Study | Spatiotemporal Dynamics</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- AOS Animation Library -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.css">
+    
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #7c3aed;
+            --accent-color: #06b6d4;
+            --dark-bg: #0f172a;
+            --light-bg: #f8fafc;
+            --text-dark: #1e293b;
+            --text-light: #64748b;
+            --gradient: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            line-height: 1.6;
+            color: var(--text-dark);
+            overflow-x: hidden;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+        
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            background: var(--gradient);
+            position: relative;
+            display: flex;
+            align-items: center;
+            color: white;
+            overflow: hidden;
+        }
+        
+        .hero::before {
+            content: '';
+            position: absolute;
+            width: 150%;
+            height: 150%;
+            background: url('data:image/svg+xml,<svg width="100" height="100" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="1"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>');
+            animation: drift 60s linear infinite;
+            opacity: 0.3;
+        }
+        
+        @keyframes drift {
+            from { transform: rotate(0deg) translate(-50%, -50%); }
+            to { transform: rotate(360deg) translate(-50%, -50%); }
+        }
+        
+        .hero-content {
+            position: relative;
+            z-index: 2;
+        }
+        
+        .hero h1 {
+            font-family: 'Playfair Display', serif;
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 1.5rem;
+            line-height: 1.2;
+        }
+        
+        .hero-subtitle {
+            font-size: 1.5rem;
+            margin-bottom: 2rem;
+            opacity: 0.95;
+            font-weight: 300;
+        }
+        
+        .hero-description {
+            font-size: 1.1rem;
+            max-width: 800px;
+            margin-bottom: 2.5rem;
+            opacity: 0.9;
+            line-height: 1.8;
+        }
+        
+        .btn-group {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        
+        .btn {
+            padding: 1rem 2rem;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+        
+        .btn-primary {
+            background: white;
+            color: var(--primary-color);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        
+        .btn-secondary {
+            background: transparent;
+            color: white;
+            border: 2px solid white;
+        }
+        
+        .btn-secondary:hover {
+            background: white;
+            color: var(--primary-color);
+        }
+        
+        .scroll-indicator {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            animation: bounce 2s infinite;
+        }
+        
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% { transform: translateX(-50%) translateY(0); }
+            40% { transform: translateX(-50%) translateY(-10px); }
+            60% { transform: translateX(-50%) translateY(-5px); }
+        }
+        
+        /* Section Styles */
+        section {
+            padding: 6rem 0;
+        }
+        
+        .section-title {
+            font-family: 'Playfair Display', serif;
+            font-size: 2.5rem;
+            text-align: center;
+            margin-bottom: 1rem;
+            color: var(--text-dark);
+        }
+        
+        .section-subtitle {
+            text-align: center;
+            color: var(--text-light);
+            font-size: 1.2rem;
+            margin-bottom: 4rem;
+            max-width: 700px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        /* Overview Section */
+        .overview {
+            background: var(--light-bg);
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 2rem;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1);
+        }
+        
+        .stat-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            background: var(--gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-label {
+            color: var(--text-light);
+            font-size: 1rem;
+        }
+        
+        /* Key Findings Section */
+        .findings {
+            background: white;
+        }
+        
+        .findings-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .finding-card {
+            padding: 2rem;
+            border-radius: 15px;
+            background: var(--light-bg);
+            border-left: 4px solid var(--primary-color);
+            transition: all 0.3s ease;
+        }
+        
+        .finding-card:nth-child(2) {
+            border-left-color: var(--secondary-color);
+        }
+        
+        .finding-card:nth-child(3) {
+            border-left-color: var(--accent-color);
+        }
+        
+        .finding-card:hover {
+            transform: translateX(10px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        
+        .finding-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+            color: var(--primary-color);
+        }
+        
+        .finding-card:nth-child(2) .finding-icon {
+            color: var(--secondary-color);
+        }
+        
+        .finding-card:nth-child(3) .finding-icon {
+            color: var(--accent-color);
+        }
+        
+        .finding-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-dark);
+        }
+        
+        .finding-text {
+            color: var(--text-light);
+            line-height: 1.8;
+        }
+        
+        /* Methods Section */
+        .methods {
+            background: var(--dark-bg);
+            color: white;
+        }
+        
+        .methods .section-title,
+        .methods .section-subtitle {
+            color: white;
+        }
+        
+        .methods .section-subtitle {
+            opacity: 0.8;
+        }
+        
+        .methods-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+            margin-top: 3rem;
+        }
+        
+        .method-card {
+            background: rgba(255,255,255,0.05);
+            padding: 2rem;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+        
+        .method-card:hover {
+            background: rgba(255,255,255,0.08);
+            transform: translateY(-5px);
+        }
+        
+        .method-number {
+            font-size: 3rem;
+            font-weight: 700;
+            color: var(--accent-color);
+            margin-bottom: 1rem;
+        }
+        
+        .method-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        .method-text {
+            opacity: 0.8;
+            line-height: 1.8;
+        }
+        
+        /* Data Section */
+        .data-access {
+            background: var(--light-bg);
+        }
+        
+        .data-card {
+            background: white;
+            padding: 3rem;
+            border-radius: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            text-align: center;
+            max-width: 700px;
+            margin: 0 auto;
+        }
+        
+        .data-icon {
+            font-size: 4rem;
+            color: var(--primary-color);
+            margin-bottom: 1.5rem;
+        }
+        
+        .data-card h3 {
+            font-size: 1.8rem;
+            margin-bottom: 1rem;
+            color: var(--text-dark);
+        }
+        
+        .data-card p {
+            color: var(--text-light);
+            margin-bottom: 2rem;
+            line-height: 1.8;
+        }
+        
+        .data-id {
+            display: inline-block;
+            background: var(--light-bg);
+            padding: 1rem 2rem;
+            border-radius: 10px;
+            font-family: monospace;
+            font-size: 1.2rem;
+            color: var(--primary-color);
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+        }
+        
+        /* Footer */
+        footer {
+            background: var(--dark-bg);
+            color: white;
+            padding: 3rem 0;
+            text-align: center;
+        }
+        
+        .footer-content {
+            opacity: 0.8;
+        }
+        
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-top: 1.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .footer-links a {
+            color: white;
+            text-decoration: none;
+            opacity: 0.8;
+            transition: opacity 0.3s ease;
+        }
+        
+        .footer-links a:hover {
+            opacity: 1;
+        }
+        
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.5rem;
+            }
+            
+            .hero-subtitle {
+                font-size: 1.2rem;
+            }
+            
+            .hero-description {
+                font-size: 1rem;
+            }
+            
+            .section-title {
+                font-size: 2rem;
+            }
+            
+            .stats-grid,
+            .findings-grid,
+            .methods-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .btn-group {
+                flex-direction: column;
+            }
+            
+            .btn {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content" data-aos="fade-up">
+                <h1>The Chicken Gut Virome</h1>
+                <p class="hero-subtitle">Spatiotemporal Dynamics and Response to Dietary Interventions</p>
+                <p class="hero-description">
+                    Exploring the complex world of bacteriophages in chicken intestines and their responses 
+                    to antibiotic versus phytogenic supplementation through advanced metagenomic analysis.
+                </p>
+                <div class="btn-group">
+                    <a href="#overview" class="btn btn-primary">Learn More</a>
+                    <a href="#data" class="btn btn-secondary">Access Data</a>
+                </div>
+            </div>
+        </div>
+        <div class="scroll-indicator">
+            <i class="fas fa-chevron-down" style="font-size: 2rem; color: white; opacity: 0.7;"></i>
+        </div>
+    </section>
+
+    <!-- Overview Section -->
+    <section id="overview" class="overview">
+        <div class="container">
+            <h2 class="section-title" data-aos="fade-up">Research Overview</h2>
+            <p class="section-subtitle" data-aos="fade-up" data-aos-delay="100">
+                A comprehensive investigation of the chicken gut virome across developmental stages and intestinal regions
+            </p>
+            
+            <div class="stats-grid">
+                <div class="stat-card" data-aos="fade-up" data-aos-delay="200">
+                    <div class="stat-icon"><i class="fas fa-flask"></i></div>
+                    <div class="stat-number">360</div>
+                    <div class="stat-label">Chicken Samples Analyzed</div>
+                </div>
+                
+                <div class="stat-card" data-aos="fade-up" data-aos-delay="300">
+                    <div class="stat-icon"><i class="fas fa-dna"></i></div>
+                    <div class="stat-number">12,400</div>
+                    <div class="stat-label">Viral Contigs Identified</div>
+                </div>
+                
+                <div class="stat-card" data-aos="fade-up" data-aos-delay="400">
+                    <div class="stat-icon"><i class="fas fa-virus"></i></div>
+                    <div class="stat-number">2,014</div>
+                    <div class="stat-label">Viral Operational Units (vOTUs)</div>
+                </div>
+                
+                <div class="stat-card" data-aos="fade-up" data-aos-delay="500">
+                    <div class="stat-icon"><i class="fas fa-microscope"></i></div>
+                    <div class="stat-number">2</div>
+                    <div class="stat-label">Chicken Breeds Studied</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Key Findings Section -->
+    <section id="findings" class="findings">
+        <div class="container">
+            <h2 class="section-title" data-aos="fade-up">Key Findings</h2>
+            <p class="section-subtitle" data-aos="fade-up" data-aos-delay="100">
+                Uncovering the dynamics of phage communities and their responses to dietary interventions
+            </p>
+            
+            <div class="findings-grid">
+                <div class="finding-card" data-aos="fade-up" data-aos-delay="200">
+                    <div class="finding-icon"><i class="fas fa-project-diagram"></i></div>
+                    <h3 class="finding-title">Spatiotemporal Heterogeneity</h3>
+                    <p class="finding-text">
+                        Phage communities show distinct patterns across intestinal segments and developmental stages, 
+                        with the most dramatic changes occurring between day 1 and day 7 of age.
+                    </p>
+                </div>
+                
+                <div class="finding-card" data-aos="fade-up" data-aos-delay="300">
+                    <div class="finding-icon"><i class="fas fa-pills"></i></div>
+                    <h3 class="finding-title">Antibiotic Impact</h3>
+                    <p class="finding-text">
+                        Chlortetracycline (CTC) supplementation reduces phage community evenness and modulates 
+                        specific phage populations, potentially through selection pressure mechanisms.
+                    </p>
+                </div>
+                
+                <div class="finding-card" data-aos="fade-up" data-aos-delay="400">
+                    <div class="finding-icon"><i class="fas fa-leaf"></i></div>
+                    <h3 class="finding-title">Phytogenic Alternative</h3>
+                    <p class="finding-text">
+                        Macleaya cordata extract (MCE) promotes richer and more diverse phage communities, 
+                        supporting gut ecosystem homeostasis as a sustainable alternative to antibiotics.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Methods Section -->
+    <section id="methods" class="methods">
+        <div class="container">
+            <h2 class="section-title" data-aos="fade-up">Methodology</h2>
+            <p class="section-subtitle" data-aos="fade-up" data-aos-delay="100">
+                Advanced metagenomic approaches for comprehensive virome analysis
+            </p>
+            
+            <div class="methods-grid">
+                <div class="method-card" data-aos="fade-up" data-aos-delay="200">
+                    <div class="method-number">01</div>
+                    <h3 class="method-title">Sample Collection</h3>
+                    <p class="method-text">
+                        360 samples from two chicken breeds (AA broilers and LY chickens) across multiple 
+                        age points and dietary treatments.
+                    </p>
+                </div>
+                
+                <div class="method-card" data-aos="fade-up" data-aos-delay="300">
+                    <div class="method-number">02</div>
+                    <h3 class="method-title">Metagenomic Sequencing</h3>
+                    <p class="method-text">
+                        Comprehensive viral profiling using advanced bioinformatics pipeline for 
+                        identification and classification of viral contigs.
+                    </p>
+                </div>
+                
+                <div class="method-card" data-aos="fade-up" data-aos-delay="400">
+                    <div class="method-number">03</div>
+                    <h3 class="method-title">Dietary Interventions</h3>
+                    <p class="method-text">
+                        Comparison of antibiotic (CTC) and phytogenic (MCE) supplementation effects 
+                        on phage community structure and diversity.
+                    </p>
+                </div>
+                
+                <div class="method-card" data-aos="fade-up" data-aos-delay="500">
+                    <div class="method-number">04</div>
+                    <h3 class="method-title">Statistical Analysis</h3>
+                    <p class="method-text">
+                        Advanced diversity metrics and community analysis to reveal spatiotemporal 
+                        patterns and treatment effects.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Data Access Section -->
+    <section id="data" class="data-access">
+        <div class="container">
+            <h2 class="section-title" data-aos="fade-up">Data Availability</h2>
+            <div class="data-card" data-aos="fade-up" data-aos-delay="200">
+                <div class="data-icon"><i class="fas fa-database"></i></div>
+                <h3>Public Dataset Access</h3>
+                <p>
+                    All metagenomic data used in this study are publicly available and can be accessed 
+                    through the NCBI Sequence Read Archive.
+                </p>
+                <div class="data-id">PRJNA417359</div>
+                <a href="https://www.ncbi.nlm.nih.gov/bioproject/PRJNA417359" class="btn btn-primary" target="_blank">
+                    <i class="fas fa-external-link-alt"></i> View on NCBI
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <p>&copy; 2025 Chicken Gut Virome Research Project</p>
+                <p style="opacity: 0.6; margin-top: 0.5rem;">
+                    Research conducted using metagenomic analysis of chicken intestinal microbiomes
+                </p>
+                <div class="footer-links">
+                    <a href="https://github.com/rujinlong/pc028e5-ChickenViromeCTCvsMCE" target="_blank">
+                        <i class="fab fa-github"></i> GitHub Repository
+                    </a>
+                    <a href="https://www.ncbi.nlm.nih.gov/bioproject/PRJNA417359" target="_blank">
+                        <i class="fas fa-database"></i> NCBI Data
+                    </a>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- AOS Animation Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aos/2.3.4/aos.js"></script>
+    <script>
+        // Initialize AOS animations
+        AOS.init({
+            duration: 800,
+            easing: 'ease-in-out',
+            once: true,
+            offset: 100
+        });
+
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
